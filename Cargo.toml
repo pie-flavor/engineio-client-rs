@@ -1,0 +1,17 @@
+[package]
+name = "socketio"
+version = "0.1.0"
+authors = ["Moritz Gunz <moritz.gunz@gmail.com>"]
+description = "A socket.io client library in Rust"
+readme = "README.md"
+repository = "https://github.com/NeoLegends/socketio-rs"
+keywords = ["socket", "socketio", "socket.io", "websocket"]
+license = "MITNFA"
+
+[dependencies]
+hyper = { version = "0.9.*", default-features = false }
+url = "1.1.*"
+ws = "0.4.*"
+
+[features]
+ssl = ["hyper/ssl", "ws/ssl"]
