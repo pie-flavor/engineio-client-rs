@@ -1,2 +1,2 @@
-# socket-rs
-A socket.io client library in Rust.
+# engineio-rs
+An engine.io client library in Rust.

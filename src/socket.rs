@@ -1,7 +1,9 @@
 extern crate url;
+extern crate ws;
 
 use pool::Pool;
 use self::url::Url;
+use self::ws::Handler;
 use std::borrow::Borrow;
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
@@ -10,16 +12,14 @@ use std::thread::{Builder, JoinHandle};
 use super::{Message, SocketCreationError};
 
 /// An instance of a socket.io socket.
-pub struct Socket<'a> {
-    handlers: Arc<Mutex<HashMap<String, Vec<Box<FnMut(Message) + 'a>>>>>,
+pub struct Socket {
+    handlers: Arc<Mutex<HashMap<String, Vec<Box<FnMut(Message) + 'static + Send>>>>>,
     namespace: String,
-    rooms: HashSet<String>,
-    thread_data: Option<(SyncSender<()>, JoinHandle<()>)>
+    rooms: HashSet<String>
 }
 
-impl<'a> Socket<'a> {
-    pub fn new(pool: &mut Pool) -> Result<Socket<'a>, SocketCreationError> {
-        let (ct_tx, ct_rx) = sync_channel(0);
+impl Socket {
+    pub fn new(pool: &mut Pool) -> Result<Socket, SocketCreationError> {
         let callbacks = Arc::new(Mutex::new(HashMap::new()));
         let cb_clone = callbacks.clone();
 
@@ -28,19 +28,14 @@ impl<'a> Socket<'a> {
             let (ev_tx, ev_rx) = channel::<Message>();
 
             select! {
-                _ = ct_rx.recv() => return (),
                 _ = ev_rx.recv() => return ()
             }
         };
 
-        let join_handle = try!(Builder::new().name("Socket.io worker thread".to_owned())
-                                             .spawn(handler)
-                                             .map_err(|err| SocketCreationError::IoError(err)));
         Ok(Socket {
             handlers: callbacks,
             namespace: String::new(),
-            rooms: HashSet::new(),
-            thread_data: Some((ct_tx, join_handle))
+            rooms: HashSet::new()
         })
     }
 
@@ -59,12 +54,12 @@ impl<'a> Socket<'a> {
         self.rooms.remove(room.borrow())
     }
 
-    pub fn on<M: Borrow<str>, H: FnMut(Message) + 'a>(mut self, msg: M, handler: H) -> Socket<'a> {
+    pub fn on<M: Borrow<str>, H: FnMut(Message) + 'static + Send>(mut self, msg: M, handler: H) -> Socket {
         self.register(msg, handler);
         self
     }
 
-    pub fn register<M: Borrow<str>, H: FnMut(Message) + 'a>(&mut self, msg: M, handler: H) {
+    pub fn register<M: Borrow<str>, H: FnMut(Message) + 'static + Send>(&mut self, msg: M, handler: H) {
         self.handlers.lock().expect("Failed to acquire handler lock.")
                      .entry(msg.borrow().to_owned())
                      .or_insert(Vec::new())
@@ -72,11 +67,9 @@ impl<'a> Socket<'a> {
     }
 }
 
-impl<'a> Drop for Socket<'a> {
+impl Drop for Socket {
     fn drop(&mut self) {
-        let thread_data = self.thread_data.take().expect("Option dance for join handle failed.");
-        thread_data.0.send(()).expect("Socket.io cancellation channel was disconnected.");
-        thread_data.1.join().expect("Waiting for the worker thread to shut down failed.");
+        self.disconnect();
     }
 }
 
