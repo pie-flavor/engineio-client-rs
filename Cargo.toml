@@ -2,7 +2,7 @@
 name = "engineio"
 version = "0.1.0"
 authors = ["Moritz Gunz <moritz.gunz@gmail.com>"]
-description = "A engine.io client library in Rust"
+description = "A engine.io client library in Rust."
 readme = "README.md"
 repository = "https://github.com/NeoLegends/engineio-rs"
 keywords = ["engine", "engineio", "engine.io", "socket", "socketio", "socket.io", "websocket"]
@@ -10,8 +10,11 @@ license = "MITNFA"
 
 [dependencies]
 hyper = { version = "0.9.*", default-features = false }
+lazy_static = "0.2.*"
+rand = "0.3.*"
 rustc-serialize = "0.3.*"
-url = "0.5.9"
+schedule_recv = "0.1.*"
+url = "1.1.*"
 ws = "0.4.*"
 
 [features]
