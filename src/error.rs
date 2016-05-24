@@ -6,13 +6,19 @@ use hyper::Error as HttpError;
 use rustc_serialize::base64::FromBase64Error;
 use rustc_serialize::json::DecoderError;
 
-/// The error that may occur while parsing a packet.
+/// The error type for engine.io associated operations.
 #[derive(Debug)]
 pub enum EngineError {
     /// An error occured while parsing the base-64 encoded binary data.
     Base64(FromBase64Error),
 
     /// An HTTP error occured.
+    ///
+    /// For example, the server sent an invalid status code.
+    ///
+    /// **Attention**: To keep the error hierarchy flat, this variant does
+    /// _not_ contain I/O errors that were related to HTTP operations. Those
+    /// are destructured and moved into the `EngineError::Io(IoError)` variant.
     Http(HttpError),
 
     /// The action could not be performed because of invalid data.
@@ -20,12 +26,16 @@ pub enum EngineError {
     /// For example, the data length of a payload-packet could not be parsed.
     InvalidData(Box<Error + Send + Sync>),
 
-    /// The action could not be performed because the component was in an invalid state.
+    /// The action could not be performed because the component was in
+    /// an invalid state.
     ///
-    /// For example, messages could not be sent through a `Connection` because it isn't connected.
+    /// For example, messages could not be sent through a `Connection`
+    /// because it isn't connected.
     InvalidState(Box<Error + Send + Sync>),
 
     /// An I/O error occured.
+    ///
+    /// For example, the server unexpectedly closed the connection.
     Io(IoError),
 
     /// An error occured while parsing string data from UTF-8.
@@ -38,8 +48,7 @@ impl EngineError {
     ///
     /// ## Example
     /// ```
-    /// use engineio::EngineError;
-    ///
+    /// # use engineio::EngineError;
     /// let e = EngineError::invalid_data("Data was invalid.");
     /// ```
     pub fn invalid_data<E: Into<Box<Error + Send + Sync>>>(err: E) -> EngineError {
@@ -51,8 +60,7 @@ impl EngineError {
     ///
     /// ## Example
     /// ```
-    /// use engineio::EngineError;
-    ///
+    /// # use engineio::EngineError;
     /// let e = EngineError::invalid_state("Data was invalid.");
     /// ```
     pub fn invalid_state<E: Into<Box<Error + Send + Sync>>>(err: E) -> EngineError {
@@ -104,7 +112,10 @@ impl From<FromBase64Error> for EngineError {
 
 impl From<HttpError> for EngineError {
     fn from(err: HttpError) -> EngineError {
-        EngineError::Http(err)
+        match err {
+            HttpError::Io(io_err) => EngineError::Io(io_err),
+            _ => EngineError::Http(err)
+        }
     }
 }
 

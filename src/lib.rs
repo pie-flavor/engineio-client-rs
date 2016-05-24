@@ -25,6 +25,7 @@ pub use packet::{OpCode, Packet, Payload};
 
 const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler lock.";
 
+/// An event that can occur within a connection.
 #[derive(Debug)]
 pub enum EngineEvent<'a> {
     /// Fired when an engine.io connection is made.
