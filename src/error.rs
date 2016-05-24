@@ -6,6 +6,10 @@ use hyper::Error as HttpError;
 use rustc_serialize::base64::FromBase64Error;
 use rustc_serialize::json::DecoderError;
 
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum Void {}
+
 /// The error type for engine.io associated operations.
 #[derive(Debug)]
 pub enum EngineError {
@@ -39,7 +43,10 @@ pub enum EngineError {
     Io(IoError),
 
     /// An error occured while parsing string data from UTF-8.
-    Utf8
+    Utf8,
+
+    #[doc(hidden)]
+    __Nonexhaustive(Void)
 }
 
 impl EngineError {
@@ -82,7 +89,8 @@ impl Error for EngineError {
             EngineError::InvalidData(ref err) => err.description(),
             EngineError::InvalidState(ref err) => err.description(),
             EngineError::Io(ref err) => err.description(),
-            EngineError::Utf8 => "UTF-8 data was invalid."
+            EngineError::Utf8 => "UTF-8 data was invalid.",
+            _ => "Unknown engine.io error."
         }
     }
 
@@ -93,7 +101,8 @@ impl Error for EngineError {
             EngineError::InvalidData(ref err) => err.cause(),
             EngineError::InvalidState(ref err) => err.cause(),
             EngineError::Io(ref err) => Some(err),
-            EngineError::Utf8 => None
+            EngineError::Utf8 => None,
+            _ => None
         }
     }
 }
