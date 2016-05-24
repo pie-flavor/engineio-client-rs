@@ -29,7 +29,7 @@ pub enum EngineError {
     Io(IoError),
 
     /// An error occured while parsing string data from UTF-8.
-    Utf8(Utf8Error)
+    Utf8
 }
 
 impl EngineError {
@@ -74,7 +74,7 @@ impl Error for EngineError {
             EngineError::InvalidData(ref err) => err.description(),
             EngineError::InvalidState(ref err) => err.description(),
             EngineError::Io(ref err) => err.description(),
-            EngineError::Utf8(ref err) => err.description()
+            EngineError::Utf8 => "UTF-8 data was invalid."
         }
     }
 
@@ -85,7 +85,7 @@ impl Error for EngineError {
             EngineError::InvalidData(ref err) => err.cause(),
             EngineError::InvalidState(ref err) => err.cause(),
             EngineError::Io(ref err) => Some(err),
-            EngineError::Utf8(ref err) => Some(err)
+            EngineError::Utf8 => None
         }
     }
 }
@@ -115,7 +115,7 @@ impl From<IoError> for EngineError {
 }
 
 impl From<Utf8Error> for EngineError {
-    fn from(err: Utf8Error) -> EngineError {
-        EngineError::Utf8(err)
+    fn from(_: Utf8Error) -> EngineError {
+        EngineError::Utf8
     }
 }

@@ -13,7 +13,6 @@ hyper = { version = "0.9.*", default-features = false }
 lazy_static = "0.2.*"
 rand = "0.3.*"
 rustc-serialize = "0.3.*"
-schedule_recv = "0.1.*"
 url = "1.1.*"
 ws = "0.4.*"
 

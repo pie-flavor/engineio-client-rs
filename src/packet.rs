@@ -1,8 +1,17 @@
+//! Contains the code for an engine.io packet.
+//!
+//! This implementation only supports the base64 / text encoding
+//! since it is the only one that is implemented in a sane way by
+//! the creators of engine.io.
+
 use std::fmt::{Display, Formatter, Result as FmtResult};
-use std::io::{BufRead, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
+use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::str::from_utf8;
 use ::EngineError;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
+
+const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
+const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
 
 /// An engine.io message.
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -20,11 +29,6 @@ impl Packet {
         }
     }
 
-    /// Creates an empty packet.
-    pub fn empty(opcode: OpCode) -> Packet {
-        Packet::with_string(opcode, String::new())
-    }
-
     /// Constructs a new `Packet` with binary data.
     ///
     /// This method is a shorthand for `Packet::new(opcode, Payload::Binary(payload))`.
@@ -34,7 +38,7 @@ impl Packet {
 
     /// Constructs a new `Packet` with string data.
     ///
-    /// This method is a shorthand for `Packet::new(opcode, Payload::String(payload.to_owned()))`.
+    /// This copies the string.
     pub fn with_str(opcode: OpCode, payload: &str) -> Packet {
         Packet::with_string(opcode, payload.to_owned())
     }
@@ -46,27 +50,8 @@ impl Packet {
         Packet::new(opcode, Payload::String(payload))
     }
 
-    /// Parses a `Packet` from a string slice.
-    pub fn from_str(buf: &str) -> Result<Packet, EngineError> {
-        let mut chars = buf.chars();
-        let opcode_char = chars.nth(0);
-        match opcode_char {
-            Some('b') => {
-                let opcode_char = try!(chars.nth(0).ok_or(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, "The opcode could not be parsed because the string was too short."))));
-                let opcode = try!(OpCode::parse_char(opcode_char));
-                let b64 = try!(buf[2..].from_base64());
-                Ok(Packet::with_binary(opcode, b64))
-            },
-            Some(ch @ '0'...'6') => {
-                let opcode = try!(OpCode::parse_char(ch));
-                Ok(Packet::with_str(opcode, &buf[1..]))
-            },
-            _ => Err(EngineError::invalid_data("Invalid opcode character or binary indicator."))
-        }
-    }
-
     /// Tries to parse a `Packet` from a `reader`. The reader will be read to its end.
-    pub fn parse<R: Read>(reader: &mut R) -> Result<Packet, EngineError> {
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<Packet, EngineError> {
         let mut buf = String::new();
         try!(reader.read_to_string(&mut buf));
 
@@ -75,10 +60,10 @@ impl Packet {
 
     /// Parses a list of packets in payload encoding from a `reader`. If an error occurs
     /// the packets that have been read until that point are returned.
-    pub fn parse_all<R: BufRead>(reader: &mut R) -> Vec<Packet> {
+    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Vec<Packet> {
         let mut results = Vec::new();
         loop {
-            match Packet::parse_payload(reader) {
+            match Packet::from_reader_payload(reader) {
                 Ok(packet) => results.push(packet),
                 Err(_) => return results
             }
@@ -87,20 +72,43 @@ impl Packet {
 
     /// Tries to parse a `Packet` in payload encoding from a `reader`. Only the data needed
     /// is read from the data source.
-    pub fn parse_payload<R: BufRead>(reader: &mut R) -> Result<Packet, EngineError> {
+    pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Packet, EngineError> {
         let data_length = {
             let mut buf = Vec::new();
-            if let Ok(0) = reader.read_until(b':', &mut buf) {
-                return Err(IoError::new(ErrorKind::UnexpectedEof, "Reader reached its end before the packet length could be read.").into());
+            if try!(reader.read_until(b':', &mut buf)) == 0 {
+                return Err(IoError::new(ErrorKind::UnexpectedEof, READER_UNEXPECTED_EOF).into());
             }
             let data_length_str = try!(from_utf8(&buf[..buf.len() - 1]));
-            try!(data_length_str.parse::<usize>().map_err(|_| EngineError::invalid_data("The data length could not be parsed.")))
+            try!(data_length_str.parse::<usize>().map_err(|_| EngineError::invalid_data(DATA_LENGTH_INVALID)))
         };
-        let mut buf = vec![0; data_length];
-        try!(reader.read_exact(&mut buf));
-        let data_str = try!(from_utf8(&buf));
 
-        Packet::from_str(data_str)
+        let mut string = String::with_capacity(data_length);
+        for ch in reader.chars().take(data_length) {
+            match ch {
+                Ok(ch) => string.push(ch),
+                Err(CharsError::NotUtf8) => return Err(EngineError::Utf8),
+                Err(CharsError::Other(io_err)) => return Err(EngineError::Io(io_err))
+            }
+        }
+        Packet::from_str(&string)
+    }
+
+    /// Parses a `Packet` from a string slice.
+    pub fn from_str(buf: &str) -> Result<Packet, EngineError> {
+        let mut chars = buf.chars();
+        match chars.nth(0) {
+            Some('b') => {
+                let opcode_char = try!(chars.nth(0).ok_or(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, "The opcode could not be parsed because the string was too short."))));
+                let opcode = try!(OpCode::from_char(opcode_char));
+                let b64 = try!(buf[2..].from_base64());
+                Ok(Packet::with_binary(opcode, b64))
+            },
+            Some(ch @ '0'...'6') => {
+                let opcode = try!(OpCode::from_char(ch));
+                Ok(Packet::with_str(opcode, &buf[1..]))
+            },
+            _ => Err(EngineError::invalid_data("Invalid opcode character or binary indicator."))
+        }
     }
 
     /// Writes the `Packet` into the given `writer`.
@@ -118,7 +126,7 @@ impl Packet {
 
 impl Default for Packet {
     fn default() -> Packet {
-        Packet::empty(OpCode::Open)
+        Packet::new(OpCode::Open, Payload::String(String::default()))
     }
 }
 
@@ -132,14 +140,14 @@ impl Display for Packet {
     }
 }
 
-/// A message opcode.
+/// A packet opcode.
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
 #[repr(u8)]
 pub enum OpCode {
     /// Sent from the server when a new connection is opened.
     Open = 0,
 
-    /// Send by the client to request the shutdown of the connection.
+    /// Sent by the client to request the shutdown of the connection.
     Close = 1,
 
     /// A ping message sent by the client. The server will respond with
@@ -152,19 +160,42 @@ pub enum OpCode {
     /// An actual data message.
     Message = 4,
 
+    /// An upgrade message.
+    ///
     /// Before engine.io switches a transport, it tests, if server and
-    /// client can communicate over this transport. If the test succeeds,
-    /// the client sends an upgrade packet which requests the server to
-    /// flush its cache on the old transport and switch to the new transport.
+    /// client can communicate over the transport. If the test succeeds,
+    /// the client sends an upgrade packet over the old transport which
+    /// requests the server to flush its cache on the old transport and
+    /// switch to the new transport.
     Upgrade = 5,
 
-    /// A noop packet. Used for forcing a polling cycle.
+    /// A noop packet.
+    ///
+    /// Used for forcing a polling cycle.
     Noop = 6
 }
 
 impl OpCode {
+    /// Tries to parse an OpCode from a scalar value encoded as char.
+    pub fn from_char(value: char) -> Result<OpCode, EngineError> {
+        match value.to_digit(10) {
+            Some(val) => OpCode::from_u8(val as u8),
+            None => Err(EngineError::invalid_data("Opcode character was not a digit."))
+        }
+    }
+
+    /// Tries to parse an OpCode from a scalar value encoded as string.
+    ///
+    /// ## Panics
+    /// Panics in case of an empty input string.
+    pub fn from_str(value: &str) -> Result<OpCode, EngineError> {
+        assert!(!value.is_empty());
+
+        OpCode::from_u8(try!(value.parse::<u8>().map_err(|_| EngineError::invalid_data("Could not parse opcode value to integer."))))
+    }
+
     /// Creates a new OpCode from the given scalar value.
-    pub fn from_scalar(value: u8) -> Result<OpCode, EngineError> {
+    pub fn from_u8(value: u8) -> Result<OpCode, EngineError> {
         match value {
             0 => Ok(OpCode::Open),
             1 => Ok(OpCode::Close),
@@ -173,32 +204,8 @@ impl OpCode {
             4 => Ok(OpCode::Message),
             5 => Ok(OpCode::Upgrade),
             6 => Ok(OpCode::Noop),
-            _ => Err(EngineError::invalid_data("Invalid opcode value."))
+            _ => Err(EngineError::invalid_data("Invalid opcode value. Valid values are in the range of [0, 6]."))
         }
-    }
-
-    /// Tries to parse an OpCode from a scalar value encoded as char.
-    pub fn parse_char(value: char) -> Result<OpCode, EngineError> {
-        match value {
-            '0' => Ok(OpCode::Open),
-            '1' => Ok(OpCode::Close),
-            '2' => Ok(OpCode::Ping),
-            '3' => Ok(OpCode::Pong),
-            '4' => Ok(OpCode::Message),
-            '5' => Ok(OpCode::Upgrade),
-            '6' => Ok(OpCode::Noop),
-            _ => Err(EngineError::invalid_data("Invalid opcode value."))
-        }
-    }
-
-    /// Tries to parse an OpCode from a scalar value encoded as string.
-    ///
-    /// ## Panics
-    /// Panics in case of an empty input string.
-    pub fn parse_str(value: &str) -> Result<OpCode, EngineError> {
-        assert!(!value.is_empty());
-
-        OpCode::from_scalar(try!(value.parse::<u8>().map_err(|_| EngineError::invalid_data("Could not parse opcode value to integer."))))
     }
 
     /// Gets the string representation of the OpCode.
@@ -222,36 +229,28 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opcode_from_int_scalar() {
-        assert_eq!(OpCode::Ping, OpCode::from_scalar(2).expect("Could not parse OpCode from int scalar."));
+    fn opcode_from() {
+        assert_eq!(OpCode::Ping, OpCode::from_u8(2).expect("Could not parse OpCode from int scalar."));
+        assert_eq!(OpCode::Ping, OpCode::from_char('2').expect("Could not parse OpCode from char scalar."));
+        assert_eq!(OpCode::Ping, OpCode::from_str("2").expect("Could not parse OpCode from string scalar."));
     }
 
     #[test]
     #[should_panic]
     fn opcode_from_int_scalar_panic() {
-        OpCode::from_scalar(7).expect("Invalid char OpCode value to parse yielded an error. Test succeeded.");
-    }
-
-    #[test]
-    fn opcode_from_char_scalar() {
-        assert_eq!(OpCode::Ping, OpCode::parse_char('2').expect("Could not parse OpCode from char scalar."));
+        OpCode::from_u8(7).expect("Invalid char OpCode value to parse yielded an error. Test succeeded.");
     }
 
     #[test]
     #[should_panic]
     fn opcode_from_char_scalar_panic() {
-        OpCode::parse_char('7').expect("Invalid char OpCode value to parse yielded an error. Test succeeded.");
-    }
-
-    #[test]
-    fn opcode_from_string_scalar() {
-        assert_eq!(OpCode::Ping, OpCode::parse_str("2").expect("Could not parse OpCode from string scalar."));
+        OpCode::from_char('7').expect("Invalid char OpCode value to parse yielded an error. Test succeeded.");
     }
 
     #[test]
     #[should_panic]
     fn opcode_from_string_scalar_panic() {
-        OpCode::parse_str("7").expect("Invalid string OpCode value to parse yielded an error. Test succeeded.");
+        OpCode::from_str("7").expect("Invalid string OpCode value to parse yielded an error. Test succeeded.");
     }
 
     #[test]
@@ -316,7 +315,7 @@ mod tests {
     fn test_packet_decoding_equality(p: &Packet) {
         let mut buf = Vec::new();
         p.write_to(&mut buf).expect("Failed to write packet to buffer.");
-        let p_read = Packet::parse(&mut buf.as_slice()).expect("Failed to read packet from buffer.");
+        let p_read = Packet::from_reader(&mut buf.as_slice()).expect("Failed to read packet from buffer.");
         assert_eq!(*p, p_read);
     }
 
@@ -357,7 +356,7 @@ mod tests {
     fn test_payload_decoding_equality(p: &Packet) {
         let mut buf = Vec::new();
         p.write_payload_to(&mut buf).expect("Failed to write payload to buffer.");
-        let p_read = Packet::parse_payload(&mut buf.as_slice()).expect("Failed to read payload from buffer.");
+        let p_read = Packet::from_reader_payload(&mut buf.as_slice()).expect("Failed to read payload from buffer.");
         assert_eq!(*p, p_read);
     }
 
@@ -372,8 +371,8 @@ mod tests {
         p2.write_payload_to(&mut buf).expect("Failed to write binary packet into buffer.");
         buf.set_position(0);
 
-        let p1_dec = Packet::parse_payload(&mut buf).expect("Failed to decode string packet.");
-        let p2_dec = Packet::parse_payload(&mut buf).expect("Failed to decode binary packet.");
+        let p1_dec = Packet::from_reader_payload(&mut buf).expect("Failed to decode string packet.");
+        let p2_dec = Packet::from_reader_payload(&mut buf).expect("Failed to decode binary packet.");
 
         assert_eq!(p1, p1_dec);
         assert_eq!(p2, p2_dec);
@@ -390,7 +389,7 @@ mod tests {
         p2.write_payload_to(&mut buf).expect("Failed to write binary packet into buffer.");
         buf.set_position(0);
 
-        let dec = Packet::parse_all(&mut buf);
+        let dec = Packet::from_reader_all(&mut buf);
         assert!(dec.len() == 2, "Could not read all packets from buffer.");
         assert_eq!(dec[0], p1);
         assert_eq!(dec[1], p2);
