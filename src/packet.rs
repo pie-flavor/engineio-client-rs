@@ -9,49 +9,51 @@ use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as 
 use std::str::from_utf8;
 use ::EngineError;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
+use ws::Message;
 
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
 const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
 
 /// An engine.io message.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub struct Packet {
-    pub opcode: OpCode,
-    pub payload: Payload
+    opcode: OpCode,
+    payload: Payload
 }
 
 impl Packet {
-    /// Constructs a new `Packet`.
-    pub fn new(opcode: OpCode, payload: Payload) -> Packet {
+    /// Constructs a new packet.
+    pub fn new(opcode: OpCode, payload: Payload) -> Self {
         Packet {
             opcode: opcode,
             payload: payload
         }
     }
 
-    /// Constructs a new `Packet` with binary data.
+    /// Constructs a new packet with binary data.
     ///
     /// This method is a shorthand for `Packet::new(opcode, Payload::Binary(payload))`.
-    pub fn with_binary(opcode: OpCode, payload: Vec<u8>) -> Packet {
+    pub fn with_binary(opcode: OpCode, payload: Vec<u8>) -> Self {
         Packet::new(opcode, Payload::Binary(payload))
     }
 
-    /// Constructs a new `Packet` with string data.
+    /// Constructs a new packet with string data.
     ///
-    /// This copies the string.
-    pub fn with_str(opcode: OpCode, payload: &str) -> Packet {
+    /// This method is a shorthand for `Packet::new(opcode, Payload::String(payload.to_owned()))`
+    /// and thus copies the string.
+    pub fn with_str(opcode: OpCode, payload: &str) -> Self {
         Packet::with_string(opcode, payload.to_owned())
     }
 
-    /// Constructs a new `Packet` with string data.
+    /// Constructs a new packet with string data.
     ///
     /// This method is a shorthand for `Packet::new(opcode, Payload::String(payload))`.
-    pub fn with_string(opcode: OpCode, payload: String) -> Packet {
+    pub fn with_string(opcode: OpCode, payload: String) -> Self {
         Packet::new(opcode, Payload::String(payload))
     }
 
-    /// Tries to parse a `Packet` from a `reader`. The reader will be read to its end.
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<Packet, EngineError> {
+    /// Tries to parse a packet from a `reader`. The reader will be read to its end.
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self, EngineError> {
         let mut buf = String::new();
         try!(reader.read_to_string(&mut buf));
 
@@ -60,7 +62,7 @@ impl Packet {
 
     /// Parses a list of packets in payload encoding from a `reader`. If an error occurs
     /// the packets that have been read until that point are returned.
-    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Vec<Packet> {
+    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Vec<Self> {
         let mut results = Vec::new();
         loop {
             match Packet::from_reader_payload(reader) {
@@ -70,9 +72,9 @@ impl Packet {
         }
     }
 
-    /// Tries to parse a `Packet` in payload encoding from a `reader`. Only the data needed
+    /// Tries to parse a packet in payload encoding from a `reader`. Only the data needed
     /// is read from the data source.
-    pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Packet, EngineError> {
+    pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Self, EngineError> {
         let data_length = {
             let mut buf = Vec::new();
             if try!(reader.read_until(b':', &mut buf)) == 0 {
@@ -93,8 +95,8 @@ impl Packet {
         Packet::from_str(&string)
     }
 
-    /// Parses a `Packet` from a string slice.
-    pub fn from_str(buf: &str) -> Result<Packet, EngineError> {
+    /// Parses a packet from a string slice.
+    pub fn from_str(buf: &str) -> Result<Self, EngineError> {
         let mut chars = buf.chars();
         match chars.nth(0) {
             Some('b') => {
@@ -111,7 +113,17 @@ impl Packet {
         }
     }
 
-    /// Writes the `Packet` into the given `writer`.
+    /// Gets the opcode.
+    pub fn opcode(&self) -> OpCode {
+        self.opcode
+    }
+
+    /// Gets the payload.
+    pub fn payload(&self) -> &Payload {
+        &self.payload
+    }
+
+    /// Writes the packet into the given `writer`.
     pub fn write_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
         write!(writer, "{}", self.to_string())
     }
@@ -140,8 +152,14 @@ impl Display for Packet {
     }
 }
 
+impl From<Packet> for Message {
+    fn from(p: Packet) -> Self {
+        Message::Text(p.to_string())
+    }
+}
+
 /// A packet opcode.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 #[repr(u8)]
 pub enum OpCode {
     /// Sent from the server when a new connection is opened.
@@ -215,7 +233,7 @@ impl OpCode {
 }
 
 /// The message's payload.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub enum Payload {
     /// The message contains binary data.
     Binary(Vec<u8>),

@@ -8,14 +8,13 @@
 //! is done only after it has been verified that websockets can
 //! indeed be used.
 
-use super::{Transport, TransportConfig};
+use super::{Transport, Config};
 use std::cell::RefCell;
 use std::io::{BufReader, ErrorKind, Read, Write};
 use std::sync::mpsc::{channel, Receiver, Sender, SyncSender, sync_channel};
 use std::thread;
 use std::time::{Duration, Instant};
-use ::{EngineEvent, EngineError, HANDLER_LOCK_POISONED};
-use client::Callbacks;
+use ::{EngineEvent, EngineError};
 use hyper::{Client, Error as HttpError};
 use hyper::header::Connection;
 use packet::{OpCode, Packet, Payload};
@@ -37,6 +36,7 @@ lazy_static! {
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// The long polling transport.
+#[derive(Debug)]
 pub struct Polling {
     ct_tx: SyncSender<()>,
     ev_tx: Sender<PollEvent>
@@ -50,8 +50,8 @@ impl Polling {
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
     ///   of the server to connect to.
     /// - `callbacks: Callbacks`: Callbacks to call when asynchronous events are ready.
-    pub fn new(url: Url, callbacks: Callbacks) -> Polling {
-        Polling::create(url, callbacks, None)
+    pub fn new<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C) -> Polling {
+        Polling::create(url, callback, None)
     }
 
     /// Creates a new instance of a long polling transport from a given
@@ -61,17 +61,17 @@ impl Polling {
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
     ///   of the server to connect to.
     /// - `callbacks: Callbacks`: Callbacks to call when asynchronous events are ready.
-    /// - `cfg: TransportConfig`: A transport configuration used to recreate the
+    /// - `cfg: Config`: A transport configuration used to recreate the
     ///   transport after it has been interrupted by network issues.
-    pub fn with_cfg(url: Url, callbacks: Callbacks, cfg: TransportConfig) -> Polling {
-        Polling::create(url, callbacks, Some(cfg))
+    pub fn with_cfg<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Config) -> Polling {
+        Polling::create(url, callback, Some(cfg))
     }
 
-    fn create(url: Url, callbacks: Callbacks, cfg: Option<TransportConfig>) -> Polling {
+    fn create<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Option<Config>) -> Polling {
         let (ct_tx, ct_rx) = sync_channel(0);
         let (ev_tx, ev_rx) = channel();
 
-        thread::spawn(move || handle_polling(url, callbacks, cfg, ct_rx, ev_rx));
+        thread::spawn(move || handle_polling(url, callback, cfg, ct_rx, ev_rx));
         Polling {
             ct_tx: ct_tx,
             ev_tx: ev_tx
@@ -95,7 +95,7 @@ impl Transport for Polling {
     }
 
     fn send(&mut self, msgs: Vec<Packet>) -> Result<(), EngineError> {
-        self.ev_tx.send(PollEvent::Send(msgs.to_vec())).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        self.ev_tx.send(PollEvent::Send(msgs)).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
     }
 
     fn start(&mut self) -> Result<(), EngineError> {
@@ -111,23 +111,19 @@ enum PollEvent {
     Send(Vec<Packet>)
 }
 
-fn handle_polling(url: Url, callbacks: Callbacks, cfg: Option<TransportConfig>, ct_rx: Receiver<()>, ev_rx: Receiver<PollEvent>) {
+fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback: C, cfg: Option<Config>, ct_rx: Receiver<()>, ev_rx: Receiver<PollEvent>) {
     let cfg = if let Some(c) = cfg {
         c
     } else {
         match init_session(url.clone()) {
             Ok(config) => config,
             Err(err) => {
-                for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).iter_mut() {
-                    func(EngineEvent::ConnectError(&err));
-                }
+                callback(EngineEvent::ConnectError(&err));
                 return;
             }
         }
     };
-    for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).iter_mut() {
-        func(EngineEvent::Connect);
-    }
+    callback(EngineEvent::Connect);
 
     let mut is_paused = false;
     loop {
@@ -145,37 +141,30 @@ fn handle_polling(url: Url, callbacks: Callbacks, cfg: Option<TransportConfig>, 
             _ = ct_rx.recv() => return,
             recv_res = ev_rx.recv() => {
                 match recv_res {
-                    Ok(ev) => {
-                        match ev {
-                            PollEvent::Close(tx) => {
-                                let _ = tx.send(send(url.clone(), cfg.sid(), vec![Packet::with_str(OpCode::Close, "")]));
-                                return;
-                            },
-                            PollEvent::Pause => is_paused = true,
-                            PollEvent::Send(packets) => {
-                                if !is_paused {
-                                    send_async(url.clone(), cfg.sid().to_owned(), packets, channel().0);
-                                }
-                            },
-                            PollEvent::Start => is_paused = false
+                    Ok(PollEvent::Close(tx)) => {
+                        // No async here since we're shutting down anyway
+                        let _ = tx.send(send(url.clone(), cfg.sid(), vec![Packet::with_str(OpCode::Close, "")]));
+                        return;
+                    },
+                    Ok(PollEvent::Pause) => is_paused = true,
+                    Ok(PollEvent::Send(packets)) => {
+                        if !is_paused {
+                            send_async(url.clone(), cfg.sid().to_owned(), packets, channel().0);
                         }
                     },
+                    Ok(PollEvent::Start) => is_paused = false,
                     Err(_) => return
                 }
             },
             recv_res = pack_rx.recv() => {
                 match recv_res {
                     Ok(Ok(packet)) => {
-                        for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).iter_mut() {
-                            func(EngineEvent::Message(&packet));
-                        }
+                        callback(EngineEvent::Message(&packet));
                         break;
                     },
                     Ok(Err(err)) => {
                         let _ = writeln!(&mut ::std::io::stderr(), "Failed to receive packet: {:?}", &err);
-                        for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).iter_mut() {
-                            func(EngineEvent::Error(&err));
-                        }
+                        callback(EngineEvent::Error(&err));
                         return;
                     },
                     _ => {}
@@ -200,10 +189,10 @@ fn append_eio_parameters(url: &mut Url, sid: Option<&str>) {
     });
 }
 
-fn init_session(url: Url) -> Result<TransportConfig, EngineError> {
+fn init_session(url: Url) -> Result<Config, EngineError> {
     let p = try!(poll(url, Duration::from_secs(5), None));
-    match p.payload {
-        Payload::String(str) => decode(&str).map_err(|err| err.into()),
+    match *p.payload() {
+        Payload::String(ref str) => decode(str).map_err(|err| err.into()),
         Payload::Binary(_) => Err(EngineError::invalid_data("Received binary packet when string packet was expected in session initialization."))
     }
 }

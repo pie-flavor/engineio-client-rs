@@ -1,7 +1,13 @@
 //! An engine.io client library written in and for Rust.
 //!
-//! This library tries to mimic the look and feel of the JS
-//! client by using a similar syntax.
+//! The first goal of this library is to reach feature-complete
+//! status and full interoperability with the JS implementation.
+//! Performance is not one of the main goals, although it can be
+//! expected that there will be improvements once the library
+//! is working.
+//! In practice, this means that this library creates and destroys
+//! lots of background threads to perform all kinds of tasks.
+//! This will improve once better async IO (gogo #1081) is there.
 
 #![feature(custom_derive, io, mpsc_select)]
 
@@ -19,11 +25,16 @@ mod error;
 mod packet;
 mod transports;
 
+use std::sync::{Arc, Mutex};
+
 pub use client::Client;
+pub use connection::Connection;
 pub use error::EngineError;
 pub use packet::{OpCode, Packet, Payload};
 
 const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler lock.";
+
+pub type Callbacks = Arc<Mutex<Vec<Box<FnMut(EngineEvent) + 'static + Send>>>>;
 
 /// An event that can occur within a connection.
 #[derive(Debug)]
@@ -41,5 +52,12 @@ pub enum EngineEvent<'a> {
     Error(&'a EngineError),
 
     /// Fired when a message is sent over the connection.
-    Message(&'a Packet)
+    Message(&'a Packet),
+
+    #[doc(hidden)]
+    __Nonexhaustive(Void)
 }
+
+#[doc(hidden)]
+#[derive(Debug)]
+pub enum Void {}

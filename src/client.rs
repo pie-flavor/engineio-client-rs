@@ -1,10 +1,9 @@
 use std::borrow::Borrow;
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::sync::{Arc, Mutex};
-use ::{EngineEvent, HANDLER_LOCK_POISONED};
+use ::{Callbacks, EngineEvent, HANDLER_LOCK_POISONED};
 use connection::Connection;
 use url::Url;
-
-pub type Callbacks = Arc<Mutex<Vec<Box<FnMut(EngineEvent) + 'static + Send>>>>;
 
 /// An instance of an engine.io connection.
 pub struct Client {
@@ -13,6 +12,7 @@ pub struct Client {
 }
 
 impl Client {
+    /// Initializes a new client.
     pub fn new() -> Client {
         Client {
             connection: None,
@@ -20,20 +20,51 @@ impl Client {
         }
     }
 
-    pub fn connect<U: Borrow<Url>>(_: &U) {
-        unimplemented!()
+    /// Initializes a new client and connects to the given endpoint.
+    pub fn with_url<U: Borrow<Url>>(url: &U) -> Client {
+        let mut c = Client::new();
+        c.connect(url);
+        c
     }
 
+    /// Connects to the given endpoint, if the client isn't already connected.
+    ///
+    /// ## Returns
+    /// `true` if the client wasn't connected before and a new connection has
+    /// been established, otherwise `false`.
+    pub fn connect<U: Borrow<Url>>(&mut self, url: &U) -> bool {
+        if self.connection.is_none() {
+            self.connection = Some(Connection::with_default_if_none(url.borrow().clone(), self.handlers.clone()));
+            true
+        } else {
+            false
+        }
+    }
+
+    /// Gets the underlying connection.
+    pub fn connection(&self) -> Option<&Connection> {
+        self.connection.as_ref()
+    }
+
+    /// Disconnects the client from the endpoint.
     pub fn disconnect(&mut self) {
-        unimplemented!()
+        self.connection = None;
     }
 
-    pub fn reconnect(&mut self) {
-        unimplemented!()
+    /// Returns whether the client is connected or not.
+    pub fn is_connected(&self) -> bool {
+        self.connection.is_some()
     }
 
-    pub fn register<H: FnMut(EngineEvent) + 'static + Send>(&mut self, handler: H) {
+    /// Registers a callback for event receival.
+    pub fn register<H: FnMut(EngineEvent) + 'static + Send>(&self, handler: H) {
         self.handlers.lock().expect(HANDLER_LOCK_POISONED).push(Box::new(handler));
+    }
+}
+
+impl Debug for Client {
+    fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
+        write!(formatter, "Client {{ connection: {:?}, ... }}", self.connection)
     }
 }
 

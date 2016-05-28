@@ -3,6 +3,7 @@
 mod polling;
 mod websocket;
 
+use std::fmt::Debug;
 use std::sync::mpsc::Sender;
 use std::time::Duration;
 use ::EngineError;
@@ -19,7 +20,7 @@ pub use self::websocket::*;
 /// web sockets. Since using web sockets is not always possible,
 /// the upgrade to will only be done if both parties can really
 /// communicate over the socket.
-pub trait Transport {
+pub trait Transport : Debug {
     /// Asynchronously closes the transport.
     fn close(&mut self, Sender<Result<(), EngineError>>) -> Result<(), EngineError>;
 
@@ -36,14 +37,14 @@ pub trait Transport {
 
 #[allow(non_snake_case)]
 #[derive(Clone, Debug, Default, Eq, PartialEq, RustcEncodable, RustcDecodable)]
-pub struct TransportConfig {
+pub struct Config {
     pingInterval: u32,
     pingTimeout: u32,
     sid: String,
     upgrades: Vec<String>
 }
 
-impl TransportConfig {
+impl Config {
     pub fn ping_interval(&self) -> Duration {
         Duration::from_millis(self.pingInterval as u64)
     }

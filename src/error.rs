@@ -2,13 +2,11 @@ use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::Error as IoError;
 use std::str::Utf8Error;
+use ::Void;
 use hyper::Error as HttpError;
 use rustc_serialize::base64::FromBase64Error;
 use rustc_serialize::json::DecoderError;
-
-#[doc(hidden)]
-#[derive(Debug)]
-pub enum Void {}
+use ws::{Error as WsError, ErrorKind as WsErrorKind};
 
 /// The error type for engine.io associated operations.
 #[derive(Debug)]
@@ -19,10 +17,6 @@ pub enum EngineError {
     /// An HTTP error occured.
     ///
     /// For example, the server sent an invalid status code.
-    ///
-    /// **Attention**: To keep the error hierarchy flat, this variant does
-    /// _not_ contain I/O errors that were related to HTTP operations. Those
-    /// are destructured and moved into the `EngineError::Io(IoError)` variant.
     Http(HttpError),
 
     /// The action could not be performed because of invalid data.
@@ -45,13 +39,16 @@ pub enum EngineError {
     /// An error occured while parsing string data from UTF-8.
     Utf8,
 
+    /// An error occured inside of a websocket.
+    WebSocket(WsError),
+
     #[doc(hidden)]
     __Nonexhaustive(Void)
 }
 
 impl EngineError {
-    /// Creates an `EngineError::InvalidData` variant. Mainly used in combination
-    /// with string literals.
+    /// Creates an `EngineError::InvalidData` variant. Mainly
+    /// used in combination with string literals.
     ///
     /// ## Example
     /// ```
@@ -62,8 +59,8 @@ impl EngineError {
         EngineError::InvalidData(err.into())
     }
 
-    /// Creates an `EngineError::InvalidState` variant. Mainly used in combination
-    /// with string literals.
+    /// Creates an `EngineError::InvalidState` variant. Mainly
+    /// used in combination with string literals.
     ///
     /// ## Example
     /// ```
@@ -72,6 +69,22 @@ impl EngineError {
     /// ```
     pub fn invalid_state<E: Into<Box<Error + Send + Sync>>>(err: E) -> EngineError {
         EngineError::InvalidState(err.into())
+    }
+
+    /// Tries to get the underlying I/O error, if one is present.
+    pub fn io(&self) -> Option<&IoError> {
+        match *self {
+            EngineError::Io(ref err) => Some(err),
+            EngineError::Http(HttpError::Io(ref err)) => Some(err),
+            EngineError::WebSocket(ref err) => {
+                if let WsErrorKind::Io(ref err) = err.kind {
+                    Some(err)
+                } else {
+                    None
+                }
+            }
+            _ => None
+        }
     }
 }
 
@@ -90,6 +103,7 @@ impl Error for EngineError {
             EngineError::InvalidState(ref err) => err.description(),
             EngineError::Io(ref err) => err.description(),
             EngineError::Utf8 => "UTF-8 data was invalid.",
+            EngineError::WebSocket(ref err) => err.description(),
             _ => "Unknown engine.io error."
         }
     }
@@ -102,6 +116,7 @@ impl Error for EngineError {
             EngineError::InvalidState(ref err) => err.cause(),
             EngineError::Io(ref err) => Some(err),
             EngineError::Utf8 => None,
+            EngineError::WebSocket(ref err) => Some(err),
             _ => None
         }
     }
@@ -121,10 +136,7 @@ impl From<FromBase64Error> for EngineError {
 
 impl From<HttpError> for EngineError {
     fn from(err: HttpError) -> EngineError {
-        match err {
-            HttpError::Io(io_err) => EngineError::Io(io_err),
-            _ => EngineError::Http(err)
-        }
+        EngineError::Http(err)
     }
 }
 
@@ -137,5 +149,11 @@ impl From<IoError> for EngineError {
 impl From<Utf8Error> for EngineError {
     fn from(_: Utf8Error) -> EngineError {
         EngineError::Utf8
+    }
+}
+
+impl From<WsError> for EngineError {
+    fn from(err: WsError) -> EngineError {
+        EngineError::WebSocket(err)
     }
 }
