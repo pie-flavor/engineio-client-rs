@@ -8,17 +8,15 @@
 //! is done only after it has been verified that websockets can
 //! indeed be used.
 
-use super::{Transport, Config};
-use std::cell::RefCell;
-use std::io::{BufReader, ErrorKind, Read, Write};
-use std::sync::mpsc::{channel, Receiver, Sender, SyncSender, sync_channel};
+use super::{append_eio_parameters, Config, Transport};
+use std::io::{BufReader, ErrorKind, Write};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use ::{EngineEvent, EngineError};
 use hyper::{Client, Error as HttpError};
 use hyper::header::Connection;
 use packet::{OpCode, Packet, Payload};
-use rand::{Rng, weak_rng, XorShiftRng};
 use rustc_serialize::json::decode;
 use url::Url;
 
@@ -33,14 +31,9 @@ lazy_static! {
     };
 }
 
-thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
-
 /// The long polling transport.
 #[derive(Debug)]
-pub struct Polling {
-    ct_tx: SyncSender<()>,
-    ev_tx: Sender<PollEvent>
-}
+pub struct Polling(Sender<PollEvent>);
 
 impl Polling {
     /// Creates a new instance of a long polling transport and automatically
@@ -68,38 +61,42 @@ impl Polling {
     }
 
     fn create<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Option<Config>) -> Polling {
-        let (ct_tx, ct_rx) = sync_channel(0);
         let (ev_tx, ev_rx) = channel();
-
-        thread::spawn(move || handle_polling(url, callback, cfg, ct_rx, ev_rx));
-        Polling {
-            ct_tx: ct_tx,
-            ev_tx: ev_tx
-        }
+        thread::spawn(move || handle_polling(url, callback, cfg, ev_rx));
+        Polling(ev_tx)
     }
 }
 
 impl Drop for Polling {
     fn drop(&mut self) {
-        let _ = self.ct_tx.send(()); // If we fail to send, we're already down.
+        let _ = self.close();
     }
 }
 
 impl Transport for Polling {
-    fn close(&mut self, tx: Sender<Result<(), EngineError>>) -> Result<(), EngineError> {
-        self.ev_tx.send(PollEvent::Close(tx)).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+    fn close(&mut self) -> Result<(), EngineError> {
+        let (tx, rx) = channel();
+        // Never mind if we fail to transmit the poll event here.
+        // In case the channel is disconnected, the background thread has hung up anyway.
+        if self.0.send(PollEvent::Close(tx)).is_ok() {
+            // Only wait for a response if the request made it through
+            if let Ok(res) = rx.recv() {
+                return res;
+            }
+        }
+        Ok(())
     }
 
     fn pause(&mut self) -> Result<(), EngineError> {
-        self.ev_tx.send(PollEvent::Pause).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        self.0.send(PollEvent::Pause).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
     }
 
     fn send(&mut self, msgs: Vec<Packet>) -> Result<(), EngineError> {
-        self.ev_tx.send(PollEvent::Send(msgs)).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        self.0.send(PollEvent::Send(msgs)).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
     }
 
     fn start(&mut self) -> Result<(), EngineError> {
-        self.ev_tx.send(PollEvent::Start).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        self.0.send(PollEvent::Start).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
     }
 }
 
@@ -111,7 +108,7 @@ enum PollEvent {
     Send(Vec<Packet>)
 }
 
-fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback: C, cfg: Option<Config>, ct_rx: Receiver<()>, ev_rx: Receiver<PollEvent>) {
+fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback: C, cfg: Option<Config>, ev_rx: Receiver<PollEvent>) {
     let cfg = if let Some(c) = cfg {
         c
     } else {
@@ -138,7 +135,6 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
         }
 
         loop { select! {
-            _ = ct_rx.recv() => return,
             recv_res = ev_rx.recv() => {
                 match recv_res {
                     Ok(PollEvent::Close(tx)) => {
@@ -175,19 +171,6 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
 }
 
 // ----------------------------------------------------------------------------
-
-fn append_eio_parameters(url: &mut Url, sid: Option<&str>) {
-    RNG.with(|rc| {
-        let mut query = url.query_pairs_mut();
-        query.append_pair("EIO", "3")
-             .append_pair("transport", "polling")
-             .append_pair("t", &rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>())
-             .append_pair("b64", "1");
-        if let Some(id) = sid {
-            query.append_pair("sid", id);
-        }
-    });
-}
 
 fn init_session(url: Url) -> Result<Config, EngineError> {
     let p = try!(poll(url, Duration::from_secs(5), None));

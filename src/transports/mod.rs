@@ -3,14 +3,18 @@
 mod polling;
 mod websocket;
 
+use std::cell::RefCell;
 use std::fmt::Debug;
-use std::sync::mpsc::Sender;
 use std::time::Duration;
 use ::EngineError;
 use packet::Packet;
+use rand::{Rng, weak_rng, XorShiftRng};
+use url::Url;
 
 pub use self::polling::Polling;
 pub use self::websocket::*;
+
+thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// Represents an engine.io transport.
 ///
@@ -22,7 +26,7 @@ pub use self::websocket::*;
 /// communicate over the socket.
 pub trait Transport : Debug {
     /// Asynchronously closes the transport.
-    fn close(&mut self, Sender<Result<(), EngineError>>) -> Result<(), EngineError>;
+    fn close(&mut self) -> Result<(), EngineError>;
 
     /// Pauses the transport so that the buffers are flushed and
     /// no more messages are sent.
@@ -59,5 +63,16 @@ impl Config {
 
     pub fn upgrades(&self) -> &[String] {
         &self.upgrades
+    }
+}
+
+fn append_eio_parameters(url: &mut Url, sid: Option<&str>) {
+    let mut query = url.query_pairs_mut();
+    query.append_pair("EIO", "3")
+         .append_pair("transport", "polling")
+         .append_pair("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
+         .append_pair("b64", "1");
+    if let Some(id) = sid {
+        query.append_pair("sid", id);
     }
 }

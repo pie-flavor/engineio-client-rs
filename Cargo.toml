@@ -9,7 +9,7 @@ keywords = ["engine", "engineio", "engine.io", "socket", "socketio", "socket.io"
 license = "MITNFA"
 
 [dependencies]
-hyper = { version = "0.9.*", default-features = false }
+hyper = { version = "0.9.5", default-features = false }
 lazy_static = "0.2.*"
 rand = "0.3.*"
 rustc-serialize = "0.3.*"
