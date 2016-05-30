@@ -60,14 +60,19 @@ impl Packet {
         Packet::from_str(&buf)
     }
 
-    /// Parses a list of packets in payload encoding from a `reader`. If an error occurs
-    /// the packets that have been read until that point are returned.
-    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Vec<Self> {
+    /// Parses a list of packets in payload encoding from a `reader`.
+    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Result<Vec<Self>, EngineError> {
         let mut results = Vec::new();
         loop {
             match Packet::from_reader_payload(reader) {
                 Ok(packet) => results.push(packet),
-                Err(_) => return results
+                Err(err) => {
+                    return if results.len() > 0 {
+                        Ok(results)
+                    } else {
+                        Err(err)
+                    }
+                }
             }
         }
     }
@@ -123,6 +128,19 @@ impl Packet {
         &self.payload
     }
 
+    /// Tries to compute the length of the packet in bytes.
+    pub fn try_compute_length(&self, as_payload: bool) -> Option<usize> {
+        if let Payload::String(ref string) = self.payload {
+            let mut res = (string.len() + 1) as f64;
+            if as_payload {
+                res += (res.log10() + 1f64).floor() + 1f64;
+            }
+            Some(res as usize)
+        } else {
+            None
+        }
+    }
+
     /// Writes the packet into the given `writer`.
     pub fn write_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
         write!(writer, "{}", self.to_string())
@@ -147,7 +165,7 @@ impl Display for Packet {
         let opcode_str = self.opcode.string_repr();
         match self.payload {
             Payload::Binary(ref data) => write!(formatter, "b{}{}", opcode_str, data.to_base64(STANDARD)),
-            Payload::String(ref str) => write!(formatter, "{}{}", opcode_str, &str)
+            Payload::String(ref string) => write!(formatter, "{}{}", opcode_str, string)
         }
     }
 }
@@ -407,7 +425,7 @@ mod tests {
         p2.write_payload_to(&mut buf).expect("Failed to write binary packet into buffer.");
         buf.set_position(0);
 
-        let dec = Packet::from_reader_all(&mut buf);
+        let dec = Packet::from_reader_all(&mut buf).expect("Failed to read multiple packets from buffer.");
         assert!(dec.len() == 2, "Could not read all packets from buffer.");
         assert_eq!(dec[0], p1);
         assert_eq!(dec[1], p2);

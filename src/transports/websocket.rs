@@ -13,7 +13,7 @@ use std::sync::mpsc::{channel, Receiver};
 use std::thread;
 use ::{EngineError, EngineEvent, OpCode, Packet};
 use url::Url;
-use ws::{Builder, Error as WsError, Factory, Handler, Message, Result as WsResult, Sender as WsSender, Settings};
+use ws::{Builder, CloseCode, Error as WsError, Factory, Handler, Message, Result as WsResult, Sender as WsSender, Settings};
 
 const CALLBACK_POISONED: &'static str = "Websocket callback lock poisoned.";
 
@@ -118,6 +118,11 @@ impl<C> Factory for SocketHandler<C>
 
 impl<C> Handler for SocketHandler<C>
     where C: FnMut(EngineEvent) + Send + 'static {
+    fn on_close(&mut self, _: CloseCode, _: &str) {
+        let mut guard = self.0.lock().expect(CALLBACK_POISONED);
+        guard.deref_mut()(EngineEvent::Disconnect);
+    }
+
     fn on_error(&mut self, err: WsError) {
         let mut guard = self.0.lock().expect(CALLBACK_POISONED);
         guard.deref_mut()(EngineEvent::Error(&EngineError::WebSocket(err)));

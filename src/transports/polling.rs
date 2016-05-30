@@ -9,13 +9,12 @@
 //! indeed be used.
 
 use super::{append_eio_parameters, Config, Transport};
-use std::io::{BufReader, ErrorKind, Write};
+use std::io::{BufReader, Cursor, ErrorKind, Write};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 use ::{EngineEvent, EngineError};
 use hyper::{Client, Error as HttpError};
-use hyper::header::Connection;
 use packet::{OpCode, Packet, Payload};
 use rustc_serialize::json::decode;
 use url::Url;
@@ -154,8 +153,10 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
             },
             recv_res = pack_rx.recv() => {
                 match recv_res {
-                    Ok(Ok(packet)) => {
-                        callback(EngineEvent::Message(&packet));
+                    Ok(Ok(packets)) => {
+                        for packet in packets {
+                            callback(EngineEvent::Message(&packet));
+                        }
                         break;
                     },
                     Ok(Err(err)) => {
@@ -174,47 +175,50 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
 
 fn init_session(url: Url) -> Result<Config, EngineError> {
     let p = try!(poll(url, Duration::from_secs(5), None));
-    match *p.payload() {
+    match *p[0].payload() {
         Payload::String(ref str) => decode(str).map_err(|err| err.into()),
         Payload::Binary(_) => Err(EngineError::invalid_data("Received binary packet when string packet was expected in session initialization."))
     }
 }
 
-fn poll(mut url: Url, timeout: Duration, sid: Option<&str>) -> Result<Packet, EngineError> {
+fn poll(mut url: Url, timeout: Duration, sid: Option<&str>) -> Result<Vec<Packet>, EngineError> {
     append_eio_parameters(&mut url, sid);
     let pre_poll_time = Instant::now();
     loop {
-        match HTTP_CLIENT.get(url.clone()).header(Connection::close()).send() {
-            Ok(response) => return Packet::from_reader_payload(&mut BufReader::new(response)),
+        match HTTP_CLIENT.get(url.clone()).send() {
+            Ok(response) => return Packet::from_reader_all(&mut BufReader::new(response)),
             Err(HttpError::Io(ref err)) if err.kind() == ErrorKind::TimedOut && pre_poll_time.elapsed() < timeout => {},
             Err(err) => return Err(err.into())
         }
     }
 }
 
-fn poll_async(url: Url, timeout: Duration, sid: Option<String>, channel: Sender<Result<Packet, EngineError>>) {
+fn poll_async(url: Url, timeout: Duration, sid: Option<String>, channel: Sender<Result<Vec<Packet>, EngineError>>) {
     thread::spawn(move || {
-        let send_res = channel.send(poll(url, timeout, match sid {
+        let poll_res = poll(url, timeout, match sid {
             Some(ref string) => Some(string),
             None => None
-        }));
+        });
+        let send_res = channel.send(poll_res);
         if let Err(err) = send_res {
-            let _ = writeln!(&mut ::std::io::stderr(), "Failed to transmit polling result: {:?}", err);
+            if cfg!(debug) {
+                let _ = writeln!(&mut ::std::io::stderr(), "Failed to transmit polling result: {:?}", err);
+            }
         }
     });
 }
 
 fn send(mut url: Url, sid: &str, packets: Vec<Packet>) -> Result<(), EngineError> {
-    use std::io::Cursor;
-
     append_eio_parameters(&mut url, Some(sid));
-    let mut buf = Cursor::new(Vec::new());
+
+    let capacity = packets.iter().fold(0usize, |val, p| val + p.try_compute_length(true).unwrap_or(0usize));
+    let mut buf = Cursor::new(Vec::with_capacity(capacity));
     for packet in packets {
         try!(packet.write_payload_to(&mut buf));
     }
     let buf: &[u8] = &buf.into_inner();
 
-    match HTTP_CLIENT.post(url).header(Connection::close()).body(buf).send() {
+    match HTTP_CLIENT.post(url).body(buf).send() {
         Ok(_) => Ok(()),
         Err(err) => Err(err.into())
     }
@@ -223,7 +227,42 @@ fn send(mut url: Url, sid: &str, packets: Vec<Packet>) -> Result<(), EngineError
 fn send_async(url: Url, sid: String, packets: Vec<Packet>, channel: Sender<Result<(), EngineError>>) {
     thread::spawn(move || {
         if let Err(err) = channel.send(send(url, &sid, packets)) {
-            let _ = writeln!(&mut ::std::io::stderr(), "Failed to transmit packet sending result: {:?}", err);
+            if cfg!(debug) {
+                let _ = writeln!(&mut ::std::io::stderr(), "Failed to transmit packet sending result: {:?}", err);
+            }
         }
     });
+}
+
+#[cfg(test)]
+mod test {
+    use super::*;
+
+    #[test]
+    fn connection() {
+        use ::{EngineEvent, OpCode, Packet};
+        use std::sync::mpsc::channel;
+        use std::time::Duration;
+        use transports::Transport;
+        use url::Url;
+
+        let (tx, rx) = channel();
+        let mut p = Polling::new(Url::parse("http://festify.us:5000/engine.io/").unwrap(), move |ev| {
+            match ev {
+                EngineEvent::Connect => tx.send("connect".to_owned()).unwrap(),
+                EngineEvent::ConnectError(_) => tx.send("connect_error".to_owned()).unwrap(),
+                EngineEvent::Disconnect => tx.send("disconnect".to_owned()).unwrap(),
+                EngineEvent::Error(_) => tx.send("error".to_owned()).unwrap(),
+                EngineEvent::Message(msg) => tx.send("message ".to_owned() + &msg.to_string()).unwrap(),
+                _ => {}
+            }
+        });
+
+        assert_eq!("connect", &rx.recv().unwrap());
+        assert!(rx.recv().unwrap().starts_with("message"), "Next engine event wasn't a message.");
+
+        p.send(vec![Packet::with_str(OpCode::Message, "Hello Server!")]).expect("Failed to send packet to be sent to background thread.");
+        ::std::thread::sleep(Duration::from_millis(5000));
+        p.close().unwrap();
+    }
 }
