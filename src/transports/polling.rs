@@ -211,12 +211,12 @@ fn poll_async(url: Url, timeout: Duration, sid: Option<String>, channel: Sender<
 fn send(mut url: Url, sid: &str, packets: Vec<Packet>) -> Result<(), EngineError> {
     append_eio_parameters(&mut url, Some(sid));
 
-    let capacity = packets.iter().fold(0usize, |val, p| val + p.try_compute_length(true).unwrap_or(0usize));
+    let capacity = packets.iter().fold(0usize, |val, p| val + p.try_compute_length(false).unwrap_or(0usize));
     let mut buf = Cursor::new(Vec::with_capacity(capacity));
     for packet in packets {
         try!(packet.write_payload_to(&mut buf));
     }
-    let buf: &[u8] = &buf.into_inner();
+    let buf: &[_] = &buf.into_inner();
 
     match HTTP_CLIENT.post(url).body(buf).send() {
         Ok(_) => Ok(()),

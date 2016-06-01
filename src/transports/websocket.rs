@@ -11,12 +11,13 @@ use std::ops::DerefMut;
 use std::sync::{Arc, Mutex};
 use std::sync::mpsc::{channel, Receiver};
 use std::thread;
-use ::{EngineError, EngineEvent, OpCode, Packet};
+use ::{EngineError, EngineEvent, Packet};
 use url::Url;
 use ws::{Builder, CloseCode, Error as WsError, Factory, Handler, Message, Result as WsResult, Sender as WsSender, Settings};
 
 const CALLBACK_POISONED: &'static str = "Websocket callback lock poisoned.";
 
+/// The websockets transport.
 pub struct Socket {
     ct_rx: Receiver<()>,
     is_paused: bool,
@@ -65,7 +66,7 @@ impl Socket {
 
 impl Debug for Socket {
     fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
-        write!(formatter, "Socket {{ ... }}")
+        write!(formatter, "Socket {{ is_paused: {}, ... }}", self.is_paused)
     }
 }
 
@@ -77,7 +78,6 @@ impl Drop for Socket {
 
 impl Transport for Socket {
     fn close(&mut self) -> Result<(), EngineError> {
-        try!(self.do_send(vec![Packet::with_str(OpCode::Close, "")]));
         self.sender.shutdown().map_err(|err| err.into())
     }
 
@@ -107,12 +107,18 @@ impl<C> SocketHandler<C> {
     }
 }
 
+impl<C> ::std::clone::Clone for SocketHandler<C> { // #[derive(Clone)] doesn't work
+    fn clone(&self) -> Self {
+        SocketHandler(self.0.clone())
+    }
+}
+
 impl<C> Factory for SocketHandler<C>
     where C: FnMut(EngineEvent) + Send + 'static {
     type Handler = Self;
 
     fn connection_made(&mut self, _: WsSender) -> Self::Handler {
-        SocketHandler(self.0.clone())
+        self.clone()
     }
 }
 

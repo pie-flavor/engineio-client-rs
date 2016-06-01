@@ -14,6 +14,17 @@ use ws::Message;
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
 const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
 
+/// A macro to efficiently write a packet into a stream.
+macro_rules! write_packet {
+    ($s:ident, $e:expr) => {{
+        let opcode_str = $s.opcode.string_repr();
+        match $s.payload {
+            Payload::Binary(ref data) => write!($e, "b{}{}", opcode_str, data.to_base64(STANDARD)),
+            Payload::String(ref string) => write!($e, "{}{}", opcode_str, string)
+        }
+    }}
+}
+
 /// An engine.io message.
 #[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub struct Packet {
@@ -128,14 +139,16 @@ impl Packet {
         &self.payload
     }
 
-    /// Tries to compute the length of the packet in bytes.
-    pub fn try_compute_length(&self, as_payload: bool) -> Option<usize> {
+    /// Tries to compute the length of the packet in bytes or in characters.
+    ///
+    /// This operation is only possible if we're dealing with a string packet.
+    pub fn try_compute_length(&self, as_chars: bool) -> Option<usize> {
         if let Payload::String(ref string) = self.payload {
-            let mut res = (string.len() + 1) as f64;
-            if as_payload {
-                res += (res.log10() + 1f64).floor() + 1f64;
-            }
-            Some(res as usize)
+            Some(if as_chars {
+                string.chars().count()
+            } else {
+                string.len()
+            } + 1)
         } else {
             None
         }
@@ -143,14 +156,19 @@ impl Packet {
 
     /// Writes the packet into the given `writer`.
     pub fn write_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
-        write!(writer, "{}", self.to_string())
+        write_packet!(self, writer)
     }
 
     /// Writes the packet as payload into the given `writer`.
     pub fn write_payload_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
-        let data_to_write = self.to_string();
-        let data_length = data_to_write.chars().count();
-        write!(writer, "{}:{}", data_length, data_to_write)
+        if let Some(length) = self.try_compute_length(true) {
+            try!(write!(writer, "{}:", length));
+            self.write_to(writer)
+        } else {
+            let data_to_write = self.to_string();
+            let data_length = data_to_write.chars().count();
+            write!(writer, "{}:{}", data_length, data_to_write)
+        }
     }
 }
 
@@ -162,11 +180,7 @@ impl Default for Packet {
 
 impl Display for Packet {
     fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
-        let opcode_str = self.opcode.string_repr();
-        match self.payload {
-            Payload::Binary(ref data) => write!(formatter, "b{}{}", opcode_str, data.to_base64(STANDARD)),
-            Payload::String(ref string) => write!(formatter, "{}{}", opcode_str, string)
-        }
+        write_packet!(self, formatter)
     }
 }
 
