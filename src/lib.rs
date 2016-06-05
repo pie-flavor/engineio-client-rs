@@ -32,7 +32,7 @@ pub use connection::Connection;
 pub use error::EngineError;
 pub use packet::{OpCode, Packet, Payload};
 
-const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler lock.";
+const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler callbacks lock.";
 
 pub type Callbacks = Arc<Mutex<Vec<Box<FnMut(EngineEvent) + 'static + Send>>>>;
 
@@ -40,7 +40,7 @@ pub type Callbacks = Arc<Mutex<Vec<Box<FnMut(EngineEvent) + 'static + Send>>>>;
 #[derive(Debug)]
 pub enum EngineEvent<'a> {
     /// Fired when an engine.io connection is made.
-    Connect,
+    Connect(&'a transports::Config),
 
     /// Fired when an engine.io connection could not be established.
     ConnectError(&'a EngineError),

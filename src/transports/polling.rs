@@ -119,7 +119,7 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
             }
         }
     };
-    callback(EngineEvent::Connect);
+    callback(EngineEvent::Connect(&cfg));
 
     let mut is_paused = false;
     loop {
@@ -138,7 +138,9 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
                 match recv_res {
                     Ok(PollEvent::Close(tx)) => {
                         // No async here since we're shutting down anyway
-                        let _ = tx.send(send(url.clone(), cfg.sid(), vec![Packet::with_str(OpCode::Close, "")]));
+                        let res = send(url.clone(), cfg.sid(), vec![Packet::with_str(OpCode::Close, "")]);
+                        callback(EngineEvent::Disconnect);
+                        let _ = tx.send(res);
                         return;
                     },
                     Ok(PollEvent::Pause) => is_paused = true,
@@ -239,6 +241,7 @@ mod test {
     use super::*;
 
     #[test]
+    #[ignore]
     fn connection() {
         use ::{EngineEvent, OpCode, Packet};
         use std::sync::mpsc::channel;
@@ -249,7 +252,7 @@ mod test {
         let (tx, rx) = channel();
         let mut p = Polling::new(Url::parse("http://festify.us:5000/engine.io/").unwrap(), move |ev| {
             match ev {
-                EngineEvent::Connect => tx.send("connect".to_owned()).unwrap(),
+                EngineEvent::Connect(_) => tx.send("connect".to_owned()).unwrap(),
                 EngineEvent::ConnectError(_) => tx.send("connect_error".to_owned()).unwrap(),
                 EngineEvent::Disconnect => tx.send("disconnect".to_owned()).unwrap(),
                 EngineEvent::Error(_) => tx.send("error".to_owned()).unwrap(),

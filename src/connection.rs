@@ -1,7 +1,11 @@
 use super::*;
-use std::fmt::{Debug, Formatter, Result as FmtResult};
+use ::HANDLER_LOCK_POISONED;
+use std::ops::{Deref, DerefMut};
+use std::sync::{Arc, RwLock};
 use transports::*;
 use url::Url;
+
+const CONNECTION_STATE_POISONED: &'static str = "Failed to mutably lock connection state rw-lock.";
 
 /// Represents a connection to an engine.io server over a
 /// variety of transports.
@@ -10,10 +14,14 @@ use url::Url;
 /// long polling to websockets. It is also responsible for enqueueing
 /// the messages while a transport is paused and upgraded and
 /// sending the buffered messages when the upgrade is finished.
+///
+/// Right now this does nothing but forward all messages to
+/// the long polling transport.
+#[derive(Debug)]
 pub struct Connection {
-    callbacks: Callbacks,
-    p_buf: Vec<Packet>,
-    transport: Option<Box<Transport>>,
+    cfg: Arc<RwLock<Option<Config>>>,
+    transport: Polling,
+    state: Arc<RwLock<ConnectionState>>,
     url: Url
 }
 
@@ -24,13 +32,71 @@ impl Connection {
     /// `/socket.io/` for socket.io transports) must already be set.
     pub fn new(url: Url, callbacks: Callbacks) -> Connection {
         assert!(!url.cannot_be_a_base(), "URL must be able to be a base.");
-        assert!(url.scheme() == "http" || url.scheme() == "https", "Url must be a HTTP or HTTPS url.");
+        assert!(url.scheme() == "http" || url.scheme() == "https", "Url must be an HTTP or HTTPS url.");
         assert!(!url.path().is_empty(), "Path must be set.");
 
+        let cfg = Arc::new(RwLock::new(None));
+        let state = Arc::new(RwLock::new(ConnectionState::Pending));
+        let state2 = state.clone();
         Connection {
-            callbacks: callbacks,
-            p_buf: Vec::new(),
-            transport: None,
+            cfg: cfg.clone(),
+            transport: Polling::new(url.clone(), move |ev| {
+                let on_disconnect = || {
+                    {
+                        let mut state_val = state2.write().expect(CONNECTION_STATE_POISONED);
+                        *state_val = ConnectionState::Disconnected;
+                    }
+                    for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                        func(EngineEvent::Disconnect);
+                    }
+                };
+
+                match ev {
+                    EngineEvent::Connect(c) => {
+                        {
+                            let mut cfg_val = cfg.write().expect("Failed to lock configuration lock.");
+                            *cfg_val = Some(c.clone_custom());
+                        } {
+                            let mut state_val = state2.write().expect(CONNECTION_STATE_POISONED);
+                            *state_val = ConnectionState::Connected;
+                        }
+                        for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                            func(EngineEvent::Connect(c));
+                        }
+                    },
+                    EngineEvent::ConnectError(err) => {
+                        for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                            func(EngineEvent::ConnectError(err));
+                        }
+                    },
+                    EngineEvent::Disconnect => on_disconnect(),
+                    EngineEvent::Error(ref err) => {
+                        {
+                            let mut state_val = state2.write().expect(CONNECTION_STATE_POISONED);
+                            *state_val = ConnectionState::Disconnected;
+                        }
+                        for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                            func(EngineEvent::Error(err));
+                        }
+                    },
+                    EngineEvent::Message(ref pck) => {
+                        match pck.opcode() {
+                            OpCode::Close => on_disconnect(),
+                            OpCode::Message | OpCode::Pong => {
+                                for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                                    func(EngineEvent::Message(pck));
+                                }
+                            },
+                            OpCode::Noop => {},
+                            o @ OpCode::Open |
+                            o @ OpCode::Ping |
+                            o @ OpCode::Upgrade => unreachable!("Given opcode {:?} should never reach the connection struct.", o)
+                        }
+                    },
+                    _ => unreachable!()
+                }
+            }),
+            state: state.clone(),
             url: url
         }
     }
@@ -61,14 +127,31 @@ impl Connection {
     /// ## Remarks
     /// The method buffers the packet when one tries to send a
     /// packet while a connection upgrade is taking place.
-    pub fn send(&self, packet: Packet) -> Result<(), EngineError> {
-        assert!(self.transport.is_some(), "Cannot send the packet. Connection must be connected before sending packets.");
-        unimplemented!()
+    pub fn send(&mut self, packet: Packet) -> Result<(), EngineError> {
+        self.transport.send(vec![packet])
+    }
+
+    /// Gets the connection state.
+    pub fn state(&self) -> ConnectionState {
+        *self.state.read().expect(CONNECTION_STATE_POISONED).deref()
     }
 }
 
-impl Debug for Connection {
-    fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
-        write!(formatter, "Connection {{ p_buf: {:?}, url: {}, ... }}", self.p_buf, self.url)
+/// Represents the state a connection is in.
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, RustcEncodable, RustcDecodable)]
+pub enum ConnectionState {
+    /// The connection is not connected.
+    Disconnected,
+
+    /// The connection is up and running and messages can be exchanged.
+    Connected,
+
+    /// The connection hasn't been set up yet.
+    Pending
+}
+
+impl Default for ConnectionState {
+    fn default() -> Self {
+        ConnectionState::Pending
     }
 }

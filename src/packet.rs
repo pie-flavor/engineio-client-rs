@@ -15,6 +15,11 @@ const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed."
 const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
 
 /// A macro to efficiently write a packet into a stream.
+///
+/// Encoding the packet to string and writing that into a
+/// stream always requires an additional allocation. This
+/// macro avoids that step by directly writing the packet
+/// into the stream, if possible.
 macro_rules! write_packet {
     ($s:ident, $e:expr) => {{
         let opcode_str = $s.opcode.string_repr();
@@ -63,7 +68,8 @@ impl Packet {
         Packet::new(opcode, Payload::String(payload))
     }
 
-    /// Tries to parse a packet from a `reader`. The reader will be read to its end.
+    /// Tries to parse a packet from a `reader`. The reader will be
+    /// read to its end.
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self, EngineError> {
         let mut buf = String::new();
         try!(reader.read_to_string(&mut buf));
@@ -88,8 +94,8 @@ impl Packet {
         }
     }
 
-    /// Tries to parse a packet in payload encoding from a `reader`. Only the data needed
-    /// is read from the data source.
+    /// Tries to parse a packet in payload encoding from a `reader`.
+    /// Only the data needed is read from the data source.
     pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Self, EngineError> {
         let data_length = {
             let mut buf = Vec::new();
@@ -139,9 +145,11 @@ impl Packet {
         &self.payload
     }
 
-    /// Tries to compute the length of the packet in bytes or in characters.
+    /// Tries to compute the length of the packet in bytes or
+    /// in characters.
     ///
-    /// This operation is only possible if we're dealing with a string packet.
+    /// This operation is only possible if we're dealing with
+    /// a string packet.
     pub fn try_compute_length(&self, as_chars: bool) -> Option<usize> {
         if let Payload::String(ref string) = self.payload {
             Some(if as_chars {
@@ -200,8 +208,8 @@ pub enum OpCode {
     /// Sent by the client to request the shutdown of the connection.
     Close = 1,
 
-    /// A ping message sent by the client. The server will respond with
-    /// a `Pong` message containing the same data.
+    /// A ping message sent by the client. The server will respond
+    /// with a `Pong` message containing the same data.
     Ping = 2,
 
     /// The answer to a ping message.
