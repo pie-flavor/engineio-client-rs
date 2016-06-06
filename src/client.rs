@@ -2,12 +2,12 @@ use std::borrow::Borrow;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::sync::{Arc, Mutex};
 use ::{Callbacks, EngineEvent, HANDLER_LOCK_POISONED};
-use connection::Connection;
+use connection::{Connection, ConnectionState};
 use url::Url;
 
 /// An instance of an engine.io connection.
 pub struct Client {
-    connection: Option<Connection>,
+    connection: Connection,
     handlers: Callbacks
 }
 
@@ -15,7 +15,7 @@ impl Client {
     /// Initializes a new client.
     pub fn new() -> Client {
         Client {
-            connection: None,
+            connection: Connection::new(),
             handlers: Arc::new(Mutex::new(Vec::new()))
         }
     }
@@ -33,8 +33,8 @@ impl Client {
     /// `true` if the client wasn't connected before and a new connection has
     /// been established, otherwise `false`.
     pub fn connect<U: Borrow<Url>>(&mut self, url: &U) -> bool {
-        if self.connection.is_none() {
-            self.connection = Some(Connection::with_default_if_none(url.borrow().clone(), self.handlers.clone()));
+        if !self.is_connected() {
+            self.connection.connect_with_default_if_none(url.borrow().clone(), self.handlers.clone());
             true
         } else {
             false
@@ -42,18 +42,18 @@ impl Client {
     }
 
     /// Gets the underlying connection.
-    pub fn connection(&self) -> Option<&Connection> {
-        self.connection.as_ref()
+    pub fn connection(&self) -> &Connection {
+        &self.connection
     }
 
     /// Disconnects the client from the endpoint.
     pub fn disconnect(&mut self) {
-        self.connection = None;
+        self.connection.disconnect();
     }
 
     /// Returns whether the client is connected or not.
     pub fn is_connected(&self) -> bool {
-        self.connection.is_some()
+        self.connection.state() == ConnectionState::Connected
     }
 
     /// Registers a callback for event receival.

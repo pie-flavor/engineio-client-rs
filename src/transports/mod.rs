@@ -1,7 +1,7 @@
 #![allow(dead_code)]
 
 mod polling;
-mod websocket;
+//mod websocket;
 
 use std::cell::RefCell;
 use std::fmt::Debug;
@@ -12,7 +12,7 @@ use rand::{Rng, weak_rng, XorShiftRng};
 use url::Url;
 
 pub use self::polling::Polling;
-pub use self::websocket::*;
+//pub use self::websocket::*;
 
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 

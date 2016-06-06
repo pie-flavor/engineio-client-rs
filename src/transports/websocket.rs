@@ -5,6 +5,8 @@
 //! traffic, so this library (and engine.io) takes great care to
 //! only use them when they can be used properly.
 
+// TODO: Make use of this
+
 use super::{append_eio_parameters, Config, Transport};
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::ops::DerefMut;

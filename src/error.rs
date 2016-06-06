@@ -72,6 +72,10 @@ impl EngineError {
     }
 
     /// Tries to get the underlying I/O error, if one is present.
+    ///
+    /// Since this error combines errors from multiple sources,
+    /// nested errors may in fact be I/O errors, so this method
+    /// exists to retreive them.
     pub fn io(&self) -> Option<&IoError> {
         match *self {
             EngineError::Io(ref err) => Some(err),
