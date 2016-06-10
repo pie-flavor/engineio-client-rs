@@ -14,6 +14,9 @@ pub enum EngineError {
     /// An error occured while parsing the base-64 encoded binary data.
     Base64(FromBase64Error),
 
+    /// An error occured while decoding JSON data.
+    Decode(DecoderError),
+
     /// An HTTP error occured.
     ///
     /// For example, the server sent an invalid status code.
@@ -128,7 +131,7 @@ impl Error for EngineError {
 
 impl From<DecoderError> for EngineError {
     fn from(err: DecoderError) -> EngineError {
-        EngineError::InvalidData(Box::new(err))
+        EngineError::Decode(err)
     }
 }
 

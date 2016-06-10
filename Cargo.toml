@@ -5,10 +5,11 @@ authors = ["Moritz Gunz <moritz.gunz@gmail.com>"]
 description = "A engine.io client library in Rust."
 readme = "README.md"
 repository = "https://github.com/NeoLegends/engineio-rs"
-keywords = ["engine", "engineio", "engine.io", "socket", "socketio", "socket.io", "websocket"]
+keywords = ["engine", "engineio", "engine.io", "websocket"]
 license = "MITNFA"
 
 [dependencies]
+eventual = "0.1.*"
 hyper = { version = "0.9.5", default-features = false }
 lazy_static = "0.2.*"
 rand = "0.3.*"

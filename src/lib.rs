@@ -9,8 +9,11 @@
 //! lots of background threads to perform all kinds of tasks.
 //! This will improve once better async IO (gogo #1081) is there.
 
+#![crate_name = "engineio"]
+#![crate_type = "lib"]
 #![feature(custom_derive, io, mpsc_select)]
 
+pub extern crate eventual;
 extern crate hyper;
 #[macro_use]
 extern crate lazy_static;

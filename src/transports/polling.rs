@@ -10,10 +10,11 @@
 
 use super::{append_eio_parameters, Config, Transport};
 use std::io::{BufReader, Cursor, ErrorKind, Write};
-use std::sync::mpsc::{channel, Receiver, Sender};
+use std::sync::mpsc::{channel, Receiver, Sender, SendError};
 use std::thread;
 use std::time::{Duration, Instant};
 use ::{EngineEvent, EngineError};
+use eventual::{Async, AsyncError, Complete, Future};
 use hyper::{Client, Error as HttpError};
 use packet::{OpCode, Packet, Payload};
 use rustc_serialize::json::decode;
@@ -30,6 +31,15 @@ lazy_static! {
     };
 }
 
+pub fn connect_async(url: Url) -> Future<Config, EngineError> {
+    poll_async(url, Duration::from_secs(5), None).and_then(|packets| {
+        match *packets[0].payload() {
+            Payload::String(ref str) => decode(str).map_err(|err| err.into()),
+            Payload::Binary(_) => Err(EngineError::invalid_data("Received binary packet when string packet was expected in session initialization."))
+        }
+    })
+}
+
 /// The long polling transport.
 #[derive(Debug)]
 pub struct Polling(Sender<PollEvent>);
@@ -42,12 +52,13 @@ impl Polling {
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
     ///   of the server to connect to.
     /// - `callbacks: Callbacks`: Callbacks to call when asynchronous events are ready.
-    pub fn new<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C) -> Polling {
-        Polling::create(url, callback, None)
+    pub fn new<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C) -> Future<Polling, EngineError> {
+        connect_async(url.clone()).map(move |cfg| Polling::create(url, callback, cfg, false))
     }
 
     /// Creates a new instance of a long polling transport from a given
-    /// configuration and automatically connects to the endpoint.
+    /// configuration (i.e. a reconnection). This does not fire the
+    /// `connect`-callbacks.
     ///
     /// ## Parameters
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
@@ -56,71 +67,74 @@ impl Polling {
     /// - `cfg: Config`: A transport configuration used to recreate the
     ///   transport after it has been interrupted by network issues.
     pub fn with_cfg<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Config) -> Polling {
-        Polling::create(url, callback, Some(cfg))
+        Polling::create(url, callback, cfg, true)
     }
 
-    fn create<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Option<Config>) -> Polling {
+    fn create<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Config, previously_connected: bool) -> Polling {
         let (ev_tx, ev_rx) = channel();
-        thread::spawn(move || handle_polling(url, callback, cfg, ev_rx));
+        thread::spawn(move || handle_polling(url, callback, cfg, ev_rx, previously_connected));
         Polling(ev_tx)
     }
 }
 
 impl Drop for Polling {
     fn drop(&mut self) {
-        let _ = self.close();
+        let _ = self.close().await();
     }
 }
 
 impl Transport for Polling {
-    fn close(&mut self) -> Result<(), EngineError> {
-        let (tx, rx) = channel();
-        // Never mind if we fail to transmit the poll event here.
-        // In case the channel is disconnected, the background thread has hung up anyway.
-        if self.0.send(PollEvent::Close(tx)).is_ok() {
-            // Only wait for a response if the request made it through
-            if let Ok(res) = rx.recv() {
-                return res;
-            }
+    fn close(&mut self) -> Future<(), EngineError> {
+        let (tx, f) = Future::pair();
+        if let Err(SendError(PollEvent::Close(tx))) = self.0.send(PollEvent::Close(tx)){
+            // Never mind if we fail to transmit the poll event here.
+            // In case the channel is disconnected, the background thread
+            // has hung up anyway and we're not connected anymore.
+            tx.complete(())
         }
-        Ok(())
+        f
     }
 
-    fn pause(&mut self) -> Result<(), EngineError> {
-        self.0.send(PollEvent::Pause).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+    fn pause(&mut self) -> Future<(), EngineError> {
+        let (tx, f) = Future::pair();
+        if let Err(SendError(PollEvent::Pause(tx))) = self.0.send(PollEvent::Pause(tx)) {
+            tx.fail(EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        }
+        f
     }
 
-    fn send(&mut self, msgs: Vec<Packet>) -> Result<(), EngineError> {
-        self.0.send(PollEvent::Send(msgs)).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+    fn send(&mut self, msgs: Vec<Packet>) -> Future<(), EngineError> {
+        let (tx, f) = Future::pair();
+        if let Err(SendError(PollEvent::Send(_, tx))) = self.0.send(PollEvent::Send(msgs, tx)) {
+            tx.fail(EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        }
+        f
     }
 
-    fn start(&mut self) -> Result<(), EngineError> {
-        self.0.send(PollEvent::Start).map_err(|_| EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+    fn start(&mut self) -> Future<(), EngineError> {
+        let (tx, f) = Future::pair();
+        if let Err(SendError(PollEvent::Start(tx))) = self.0.send(PollEvent::Start(tx)) {
+            tx.fail(EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
+        }
+        f
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(Debug)]
 enum PollEvent {
-    Close(Sender<Result<(), EngineError>>),
-    Start,
-    Pause,
-    Send(Vec<Packet>)
+    Close(Complete<(), EngineError>),
+    Start(Complete<(), EngineError>),
+    Pause(Complete<(), EngineError>),
+    Send(Vec<Packet>, Complete<(), EngineError>)
 }
 
-fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback: C, cfg: Option<Config>, ev_rx: Receiver<PollEvent>) {
-    let cfg = if let Some(c) = cfg {
-        c
-    } else {
-        match init_session(url.clone()) {
-            Ok(config) => config,
-            Err(err) => {
-                callback(EngineEvent::ConnectError(&err));
-                return;
-            }
-        }
-    };
-    callback(EngineEvent::Connect(&cfg));
+fn handle_polling<C>(url: Url, mut callback: C, cfg: Config, ev_rx: Receiver<PollEvent>, previously_connected: bool)
+    where C: FnMut(EngineEvent) + Send + 'static {
+    if !previously_connected {
+        callback(EngineEvent::Connect(&cfg));
+    }
 
+    let mut packet_buffer = Vec::new();
     let mut is_paused = false;
     loop {
         let (pack_tx, pack_rx) = channel();
@@ -128,9 +142,10 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
             poll_async(
                 url.clone(),
                 cfg.ping_timeout(),
-                Some(cfg.sid().to_owned()),
-                pack_tx
-            );
+                Some(cfg.sid().to_owned())
+            ).receive(move |res| {
+                let _ = pack_tx.send(res);
+            });
         }
 
         loop { select! {
@@ -138,19 +153,44 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
                 match recv_res {
                     Ok(PollEvent::Close(tx)) => {
                         // No async here since we're shutting down anyway
-                        let res = send(url.clone(), cfg.sid(), vec![Packet::with_str(OpCode::Close, "")]);
+                        let _ = send(url.clone(), cfg.sid(), vec![Packet::with_str(OpCode::Close, "")]);
                         callback(EngineEvent::Disconnect);
-                        let _ = tx.send(res);
+                        tx.complete(());
                         return;
                     },
-                    Ok(PollEvent::Pause) => is_paused = true,
-                    Ok(PollEvent::Send(packets)) => {
+                    Ok(PollEvent::Pause(tx)) => {
+                        is_paused = true;
+                        tx.complete(());
+                    },
+                    Ok(PollEvent::Send(packets, tx)) => {
+                        packet_buffer.push((tx, packets));
+
                         if !is_paused {
-                            send_async(url.clone(), cfg.sid().to_owned(), packets, channel().0);
+                            for (tx, packets) in packet_buffer.drain(..) {
+                                send_async(url.clone(), cfg.sid().to_owned(), packets).receive(|res| {
+                                    match res {
+                                        Ok(_) => tx.complete(()),
+                                        Err(AsyncError::Failed(err)) => tx.fail(err),
+                                        Err(AsyncError::Aborted) => tx.abort()
+                                    }
+                                });
+                            }
                         }
                     },
-                    Ok(PollEvent::Start) => is_paused = false,
-                    Err(_) => return
+                    Ok(PollEvent::Start(tx)) => {
+                        is_paused = false;
+                        for (tx, packets) in packet_buffer.drain(..) {
+                            send_async(url.clone(), cfg.sid().to_owned(), packets).receive(|res| {
+                                match res {
+                                    Ok(_) => tx.complete(()),
+                                    Err(AsyncError::Failed(err)) => tx.fail(err),
+                                    Err(AsyncError::Aborted) => tx.abort()
+                                }
+                            });
+                        }
+                        tx.complete(());
+                    },
+                    _ => return
                 }
             },
             recv_res = pack_rx.recv() => {
@@ -161,7 +201,7 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
                         }
                         break;
                     },
-                    Ok(Err(err)) => {
+                    Ok(Err(AsyncError::Failed(err))) => {
                         let _ = writeln!(&mut ::std::io::stderr(), "Failed to receive packet: {:?}", &err);
                         callback(EngineEvent::Error(&err));
                         return;
@@ -175,14 +215,6 @@ fn handle_polling<C: FnMut(EngineEvent) + Send + 'static>(url: Url, mut callback
 
 // ----------------------------------------------------------------------------
 
-fn init_session(url: Url) -> Result<Config, EngineError> {
-    let p = try!(poll(url, Duration::from_secs(5), None));
-    match *p[0].payload() {
-        Payload::String(ref str) => decode(str).map_err(|err| err.into()),
-        Payload::Binary(_) => Err(EngineError::invalid_data("Received binary packet when string packet was expected in session initialization."))
-    }
-}
-
 fn poll(mut url: Url, timeout: Duration, sid: Option<&str>) -> Result<Vec<Packet>, EngineError> {
     append_eio_parameters(&mut url, sid);
     let pre_poll_time = Instant::now();
@@ -195,26 +227,26 @@ fn poll(mut url: Url, timeout: Duration, sid: Option<&str>) -> Result<Vec<Packet
     }
 }
 
-fn poll_async(url: Url, timeout: Duration, sid: Option<String>, channel: Sender<Result<Vec<Packet>, EngineError>>) {
+fn poll_async(url: Url, timeout: Duration, sid: Option<String>) -> Future<Vec<Packet>, EngineError> {
+    let (tx, f) = Future::pair();
     thread::spawn(move || {
         let poll_res = poll(url, timeout, match sid {
             Some(ref string) => Some(string),
             None => None
         });
-        let send_res = channel.send(poll_res);
-        if let Err(err) = send_res {
-            if cfg!(debug) {
-                let _ = writeln!(&mut ::std::io::stderr(), "Failed to transmit polling result: {:?}", err);
-            }
+        match poll_res {
+            Ok(packets) => tx.complete(packets),
+            Err(err) => tx.fail(err)
         }
     });
+    f
 }
 
 fn send(mut url: Url, sid: &str, packets: Vec<Packet>) -> Result<(), EngineError> {
     append_eio_parameters(&mut url, Some(sid));
 
     let capacity = packets.iter().fold(0usize, |val, p| val + p.try_compute_length(false).unwrap_or(0usize));
-    let mut buf = Cursor::new(Vec::with_capacity(capacity));
+    let mut buf = Cursor::new(vec![0; capacity]);
     for packet in packets {
         try!(packet.write_payload_to(&mut buf));
     }
@@ -226,14 +258,15 @@ fn send(mut url: Url, sid: &str, packets: Vec<Packet>) -> Result<(), EngineError
     }
 }
 
-fn send_async(url: Url, sid: String, packets: Vec<Packet>, channel: Sender<Result<(), EngineError>>) {
+fn send_async(url: Url, sid: String, packets: Vec<Packet>) -> Future<(), EngineError> {
+    let (tx, f) = Future::pair();
     thread::spawn(move || {
-        if let Err(err) = channel.send(send(url, &sid, packets)) {
-            if cfg!(debug) {
-                let _ = writeln!(&mut ::std::io::stderr(), "Failed to transmit packet sending result: {:?}", err);
-            }
+        match send(url, &sid, packets){
+            Ok(_) => tx.complete(()),
+            Err(err) => tx.fail(err)
         }
     });
+    f
 }
 
 #[cfg(test)]
@@ -246,6 +279,7 @@ mod test {
         use ::{EngineEvent, OpCode, Packet};
         use std::sync::mpsc::channel;
         use std::time::Duration;
+        use eventual::*;
         use transports::Transport;
         use url::Url;
 
@@ -259,13 +293,13 @@ mod test {
                 EngineEvent::Message(msg) => tx.send("message ".to_owned() + &msg.to_string()).unwrap(),
                 _ => {}
             }
-        });
+        }).await().unwrap();
 
         assert_eq!("connect", &rx.recv().unwrap());
         assert!(rx.recv().unwrap().starts_with("message"), "Next engine event wasn't a message.");
 
-        p.send(vec![Packet::with_str(OpCode::Message, "Hello Server!")]).expect("Failed to send packet to be sent to background thread.");
+        p.send(vec![Packet::with_str(OpCode::Message, "Hello Server!")]).await().unwrap();
         ::std::thread::sleep(Duration::from_millis(5000));
-        p.close().unwrap();
+        p.close().await().unwrap();
     }
 }

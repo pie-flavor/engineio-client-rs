@@ -8,7 +8,9 @@ use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::str::from_utf8;
 use ::EngineError;
+use rustc_serialize::Decodable;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
+use rustc_serialize::json;
 use ws::Message;
 
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
@@ -133,6 +135,16 @@ impl Packet {
             },
             _ => Err(EngineError::invalid_data("Invalid opcode character or binary indicator."))
         }
+    }
+
+    /// Tries to decode the payload to JSON. Binary data is decoded to
+    /// a UTF-8 string before the conversion.
+    pub fn json<T: Decodable>(&self) -> Result<T, EngineError> {
+        let str = match &self.payload {
+            &Payload::Binary(ref data) => try!(from_utf8(data)),
+            &Payload::String(ref str) => str
+        };
+        json::decode(str).map_err(|err| err.into())
     }
 
     /// Gets the opcode.
