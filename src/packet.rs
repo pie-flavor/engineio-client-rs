@@ -11,7 +11,7 @@ use ::EngineError;
 use rustc_serialize::Decodable;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
 use rustc_serialize::json;
-use ws::Message;
+use ws;
 
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
 const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
@@ -124,7 +124,7 @@ impl Packet {
         let mut chars = buf.chars();
         match chars.nth(0) {
             Some('b') => {
-                let opcode_char = try!(chars.nth(0).ok_or(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, "The opcode could not be parsed because the string was too short."))));
+                let opcode_char = try!(chars.nth(0).ok_or(IoError::new(ErrorKind::UnexpectedEof, "The opcode could not be parsed because the string was too short.")));
                 let opcode = try!(OpCode::from_char(opcode_char));
                 let b64 = try!(buf[2..].from_base64());
                 Ok(Packet::with_binary(opcode, b64))
@@ -133,18 +133,8 @@ impl Packet {
                 let opcode = try!(OpCode::from_char(ch));
                 Ok(Packet::with_str(opcode, &buf[1..]))
             },
-            _ => Err(EngineError::invalid_data("Invalid opcode character or binary indicator."))
+            _ => Err(EngineError::invalid_data("Invalid opcode character or binary indicator (First character must be 0-6 or b."))
         }
-    }
-
-    /// Tries to decode the payload to JSON. Binary data is decoded to
-    /// a UTF-8 string before the conversion.
-    pub fn json<T: Decodable>(&self) -> Result<T, EngineError> {
-        let str = match &self.payload {
-            &Payload::Binary(ref data) => try!(from_utf8(data)),
-            &Payload::String(ref str) => str
-        };
-        json::decode(str).map_err(|err| err.into())
     }
 
     /// Gets the opcode.
@@ -204,9 +194,9 @@ impl Display for Packet {
     }
 }
 
-impl From<Packet> for Message {
+impl From<Packet> for ws::Message {
     fn from(p: Packet) -> Self {
-        Message::Text(p.to_string())
+        ws::Message::Text(p.to_string())
     }
 }
 
@@ -292,6 +282,20 @@ pub enum Payload {
 
     /// The message contains UTF-8 string data.
     String(String)
+}
+
+impl Payload {
+    /// Tries to decode the payload from JSON to an object of the given type.
+    ///
+    /// If a binary payload is given, this method attempts to read the binary
+    /// data as a UTF-8 string and decode from that.
+    pub fn from_json_to<T: Decodable>(&self) -> Result<T, EngineError> {
+        let str = match *self {
+            Payload::Binary(ref data) => try!(from_utf8(data)),
+            Payload::String(ref str) => str
+        };
+        json::decode(str).map_err(|err| err.into())
+    }
 }
 
 #[cfg(test)]
