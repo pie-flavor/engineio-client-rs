@@ -8,6 +8,7 @@ use eventual::{Async, Future};
 use transports::*;
 use url::Url;
 
+const CONFIG_POISONED: &'static str = "Failed to mutably lock connection config rw-lock.";
 const CONNECTION_STATE_POISONED: &'static str = "Failed to mutably lock connection state rw-lock.";
 const STATE_POISONED: &'static str = "Failed to lock internal state.";
 
@@ -55,6 +56,9 @@ impl Connection {
         create_connection(url.clone(), callbacks.clone(), connection_state, cfg).and_then(move |conn| {
             let mut state = state.lock().expect(STATE_POISONED);
             state.callbacks = Some(callbacks);
+            {
+                *state.cfg.write().expect(CONFIG_POISONED) = Some(conn.cfg().clone());
+            }
             state.url = Some(url);
 
             if let Some(mut transport) = mem::replace(&mut state.transport, Some(conn)) {
@@ -83,6 +87,13 @@ impl Connection {
     pub fn connect_with_path(&self, mut url: Url, path: &str, callbacks: Callbacks) -> Future<(), EngineError> {
         url.set_path(path);
         self.connect(url, callbacks)
+    }
+
+    /// Gets the connection config.
+    pub fn config(&self) -> Option<Config> {
+        let internal_state = self.0.lock().expect(STATE_POISONED);
+        let guard = internal_state.cfg.read().expect(CONFIG_POISONED);
+        guard.clone()
     }
 
     /// Disconnects the connection.

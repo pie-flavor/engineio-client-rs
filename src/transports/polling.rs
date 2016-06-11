@@ -42,7 +42,7 @@ pub fn connect_async(url: Url) -> Future<Config, EngineError> {
 
 /// The long polling transport.
 #[derive(Debug)]
-pub struct Polling(Sender<PollEvent>);
+pub struct Polling(Sender<PollEvent>, Config);
 
 impl Polling {
     /// Creates a new instance of a long polling transport and automatically
@@ -72,8 +72,14 @@ impl Polling {
 
     fn create<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Config, previously_connected: bool) -> Polling {
         let (ev_tx, ev_rx) = channel();
-        thread::spawn(move || handle_polling(url, callback, cfg, ev_rx, previously_connected));
-        Polling(ev_tx)
+        let cfg2 = cfg.clone();
+        thread::spawn(move || handle_polling(url, callback, cfg2, ev_rx, previously_connected));
+        Polling(ev_tx, cfg)
+    }
+
+    /// Gets the configuration associated with the transport.
+    pub fn cfg(&self) -> &Config {
+        &self.1
     }
 }
 
