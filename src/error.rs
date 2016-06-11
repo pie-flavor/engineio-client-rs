@@ -105,6 +105,7 @@ impl Error for EngineError {
     fn description(&self) -> &str {
         match *self {
             EngineError::Base64(ref err) => err.description(),
+            EngineError::Decode(ref err) => err.description(),
             EngineError::Http(ref err) => err.description(),
             EngineError::InvalidData(ref err) => err.description(),
             EngineError::InvalidState(ref err) => err.description(),
@@ -118,6 +119,7 @@ impl Error for EngineError {
     fn cause(&self) -> Option<&Error> {
         match *self {
             EngineError::Base64(ref err) => Some(err),
+            EngineError::Decode(ref err) => Some(err),
             EngineError::Http(ref err) => Some(err),
             EngineError::InvalidData(ref err) => err.cause(),
             EngineError::InvalidState(ref err) => err.cause(),
