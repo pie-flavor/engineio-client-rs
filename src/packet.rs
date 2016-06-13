@@ -18,10 +18,11 @@ const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the p
 
 /// A macro to efficiently write a packet into a stream.
 ///
-/// Encoding the packet to string and writing that into a
-/// stream always requires an additional allocation. This
-/// macro avoids that step by directly writing the packet
-/// into the stream, if possible.
+/// This macro exists to avoid buffering the encoded packet
+/// into a string, be DRY and return the appropriate error.
+///
+/// If it were not for this macro, we'd have to implement
+/// the encoding twice, which would be ugly.
 macro_rules! write_packet {
     ($s:ident, $e:expr) => {{
         let opcode_str = $s.opcode.string_repr();
