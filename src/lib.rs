@@ -2,12 +2,9 @@
 //!
 //! The first goal of this library is to reach feature-complete
 //! status and full interoperability with the JS implementation.
-//! Performance is not one of the main goals, although it can be
-//! expected that there will be improvements once the library
-//! is working.
-//! In practice, this means that this library creates and destroys
-//! lots of background threads to perform all kinds of tasks.
-//! This will improve once better async IO (gogo #1081) is there.
+//! Performance is always being worked on, though not focused on
+//! primarily. Major improvements in that area can come once the
+//! library is working properly and stable.
 
 #![crate_name = "engineio"]
 #![crate_type = "lib"]

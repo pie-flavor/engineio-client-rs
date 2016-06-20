@@ -8,7 +8,6 @@ use eventual::{Async, Future};
 use transports::*;
 use url::Url;
 
-const CONFIG_POISONED: &'static str = "Failed to mutably lock connection config rw-lock.";
 const CONNECTION_STATE_POISONED: &'static str = "Failed to mutably lock connection state rw-lock.";
 const STATE_POISONED: &'static str = "Failed to lock internal state.";
 
@@ -33,9 +32,9 @@ impl Connection {
     pub fn new() -> Connection {
         Connection(Arc::new(Mutex::new(ConnectionState {
             callbacks: None,
-            cfg: Arc::new(RwLock::new(None)),
+            cfg: None,
             transport: None,
-            state: Arc::new(RwLock::new(State::Pending)),
+            connection_state_lock: Arc::new(RwLock::new(State::Pending)),
             url: None
         })))
     }
@@ -47,23 +46,25 @@ impl Connection {
         assert!(url.scheme() == "http" || url.scheme() == "https", "Url must be an HTTP or HTTPS url.");
         assert!(!url.path().is_empty(), "Path must be set.");
 
-        let (connection_state, cfg) = {
+        let connection_connection_state_lock = {
             let s = self.0.lock().expect(STATE_POISONED);
-            (s.state.clone(), s.cfg.clone())
+            s.connection_state_lock.clone()
         };
         let state = self.0.clone();
 
-        create_connection(url.clone(), callbacks.clone(), connection_state, cfg).and_then(move |conn| {
+        create_connection(url.clone(), callbacks.clone(), connection_connection_state_lock).and_then(move |conn| {
             let mut state = state.lock().expect(STATE_POISONED);
-            state.callbacks = Some(callbacks);
             {
-                *state.cfg.write().expect(CONFIG_POISONED) = Some(conn.cfg().clone());
+                state.callbacks = Some(callbacks);
+                state.cfg = Some(conn.cfg().clone());
+                *state.connection_state_lock.write().expect(CONNECTION_STATE_POISONED) = State::Connected;
+                state.url = Some(url);
             }
-            state.url = Some(url);
 
             if let Some(mut transport) = mem::replace(&mut state.transport, Some(conn)) {
                 transport.close().fire();
             }
+
             Ok(())
         })
     }
@@ -92,8 +93,7 @@ impl Connection {
     /// Gets the connection config.
     pub fn config(&self) -> Option<Config> {
         let internal_state = self.0.lock().expect(STATE_POISONED);
-        let guard = internal_state.cfg.read().expect(CONFIG_POISONED);
-        guard.clone()
+        internal_state.cfg.clone()
     }
 
     /// Disconnects the connection.
@@ -109,15 +109,6 @@ impl Connection {
         } else {
             Future::of(false)
         }
-    }
-
-    /// Sends a packet to the other endpoint.
-    ///
-    /// ## Remarks
-    /// The method buffers the packet when one tries to send a
-    /// packet while a connection upgrade is taking place.
-    pub fn send(&mut self, packet: Packet) -> Future<(), EngineError> {
-        self.send_all(vec![packet])
     }
 
     /// Sends all given packets to the other endpoint.
@@ -136,7 +127,7 @@ impl Connection {
     /// Gets the connection state.
     pub fn state(&self) -> State {
         let internal_state = self.0.lock().expect(STATE_POISONED);
-        let guard = internal_state.state.read().expect(CONNECTION_STATE_POISONED);
+        let guard = internal_state.connection_state_lock.read().expect(CONNECTION_STATE_POISONED);
         *guard.deref()
     }
 }
@@ -162,9 +153,9 @@ impl Default for State {
 
 struct ConnectionState {
     callbacks: Option<Callbacks>,
-    cfg: Arc<RwLock<Option<Config>>>,
+    cfg: Option<Config>,
+    connection_state_lock: Arc<RwLock<State>>,
     transport: Option<Polling>,
-    state: Arc<RwLock<State>>,
     url: Option<Url>
 }
 
@@ -172,17 +163,17 @@ impl Debug for ConnectionState {
     fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
         write!(
             formatter,
-            "Connection {{ callbacks: ..., cfg: {:?}, transport: {:?}, state: {:?}, url: {:?} }}",
-            self.cfg, self.transport, self.state, self.url
+            "Connection {{ callbacks: ..., cfg: {:?}, connection_state: {:?}, transport: {:?}, url: {:?} }}",
+            self.cfg, self.connection_state_lock, self.transport, self.url
         )
     }
 }
 
-fn create_connection(url: Url, callbacks: Callbacks, state: Arc<RwLock<State>>, cfg: Arc<RwLock<Option<Config>>>) -> Future<Polling, EngineError> {
+fn create_connection(url: Url, callbacks: Callbacks, connection_state_lock: Arc<RwLock<State>>) -> Future<Polling, EngineError> {
     Polling::new(url.clone(), move |ev| {
         let on_disconnect = || {
             {
-                let mut state_val = state.write().expect(CONNECTION_STATE_POISONED);
+                let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
                 *state_val = State::Disconnected;
             }
             for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
@@ -192,13 +183,6 @@ fn create_connection(url: Url, callbacks: Callbacks, state: Arc<RwLock<State>>, 
 
         match ev {
             EngineEvent::Connect(c) => {
-                {
-                    let mut cfg_val = cfg.write().expect("Failed to lock configuration lock.");
-                    *cfg_val = Some(c.clone_custom());
-                } {
-                    let mut state_val = state.write().expect(CONNECTION_STATE_POISONED);
-                    *state_val = State::Connected;
-                }
                 for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
                     func(EngineEvent::Connect(c));
                 }
@@ -211,7 +195,7 @@ fn create_connection(url: Url, callbacks: Callbacks, state: Arc<RwLock<State>>, 
             EngineEvent::Disconnect => on_disconnect(),
             EngineEvent::Error(ref err) => {
                 {
-                    let mut state_val = state.write().expect(CONNECTION_STATE_POISONED);
+                    let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
                     *state_val = State::Disconnected;
                 }
                 for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {

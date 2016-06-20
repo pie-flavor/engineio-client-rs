@@ -50,15 +50,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn clone_custom(&self) -> Self {
-        Config {
-            pingInterval: self.pingInterval,
-            pingTimeout: self.pingTimeout,
-            sid: self.sid().to_owned(),
-            upgrades: self.upgrades.clone()
-        }
-    }
-
     pub fn ping_interval(&self) -> Duration {
         Duration::from_millis(self.pingInterval as u64)
     }

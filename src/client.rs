@@ -74,7 +74,7 @@ impl Client {
     /// The method buffers the packet when one tries to send a
     /// packet while a connection upgrade is taking place.
     pub fn send(&mut self, packet: Packet) -> Future<(), EngineError> {
-        self.connection.send(packet)
+        self.send_all(vec![packet])
     }
 
     /// Sends all given packets to the other endpoint.
