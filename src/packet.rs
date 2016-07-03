@@ -102,7 +102,7 @@ impl Packet {
     /// Only the data needed is read from the data source.
     pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Self, EngineError> {
         let data_length = {
-            let mut buf = Vec::new();
+            let mut buf = Vec::with_capacity(8);
             if try!(reader.read_until(b':', &mut buf)) == 0 {
                 return Err(IoError::new(ErrorKind::UnexpectedEof, READER_UNEXPECTED_EOF).into());
             }
