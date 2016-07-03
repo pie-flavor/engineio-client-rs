@@ -4,7 +4,7 @@
 //! since it is the only one that is implemented in a sane way by
 //! the creators of engine.io.
 
-use std::fmt::{Display, Formatter, Result as FmtResult};
+use std::fmt::{Display, format, Formatter, Result as FmtResult};
 use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::str::from_utf8;
 use ::EngineError;
@@ -13,6 +13,7 @@ use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
 use rustc_serialize::json;
 use ws;
 
+const BUFFER_UNEXPECTED_EOF: &'static str = "Packet opcode or binary indicator could not be read because the end of the buffer string was reached.";
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
 const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
 
@@ -125,7 +126,7 @@ impl Packet {
         let mut chars = buf.chars();
         match chars.nth(0) {
             Some('b') => {
-                let opcode_char = try!(chars.nth(0).ok_or(IoError::new(ErrorKind::UnexpectedEof, "The opcode could not be parsed because the string was too short.")));
+                let opcode_char = try!(chars.nth(0).ok_or(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)));
                 let opcode = try!(OpCode::from_char(opcode_char));
                 let b64 = try!(buf[2..].from_base64());
                 Ok(Packet::with_binary(opcode, b64))
@@ -134,7 +135,11 @@ impl Packet {
                 let opcode = try!(OpCode::from_char(ch));
                 Ok(Packet::with_str(opcode, &buf[1..]))
             },
-            _ => Err(EngineError::invalid_data("Invalid opcode character or binary indicator (First character must be 0-6 or b."))
+            Some(ch) => {
+                let msg = format(format_args!("Invalid opcode character or binary indicator found (First character must be 0-6 or b): '{}'.", ch));
+                Err(EngineError::invalid_data(msg))
+            },
+            None => Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)))
         }
     }
 
@@ -172,6 +177,8 @@ impl Packet {
 
     /// Writes the packet as payload into the given `writer`.
     pub fn write_payload_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
+        // If we can precompute the length, we write the contents directly
+        // into the stream instead of writing the packet to memory first.
         if let Some(length) = self.try_compute_length(true) {
             try!(write!(writer, "{}:", length));
             self.write_to(writer)
@@ -246,13 +253,13 @@ impl OpCode {
     }
 
     /// Tries to parse an OpCode from a scalar value encoded as string.
-    ///
-    /// ## Panics
-    /// Panics in case of an empty input string.
     pub fn from_str(value: &str) -> Result<OpCode, EngineError> {
-        assert!(!value.is_empty());
-
-        OpCode::from_u8(try!(value.parse::<u8>().map_err(|_| EngineError::invalid_data("Could not parse opcode value to integer."))))
+        if !value.is_empty() {
+            let res = value.parse::<u8>().map_err(|_| EngineError::invalid_data("Could not parse opcode value to integer."));
+            OpCode::from_u8(try!(res))
+        } else {
+            Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, "String slice to convert to opcode is empty.")))
+        }
     }
 
     /// Creates a new OpCode from the given scalar value.
