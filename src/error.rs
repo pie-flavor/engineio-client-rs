@@ -22,11 +22,6 @@ pub enum EngineError {
     /// For example, the server sent an invalid status code.
     Http(HttpError),
 
-    /// The action could not be performed because of invalid data.
-    ///
-    /// For example, the data length of a payload-packet could not be parsed.
-    InvalidData(Box<Error + Send + Sync>),
-
     /// The action could not be performed because the component was in
     /// an invalid state.
     ///
@@ -50,18 +45,6 @@ pub enum EngineError {
 }
 
 impl EngineError {
-    /// Creates an `EngineError::InvalidData` variant. Mainly
-    /// used in combination with string literals.
-    ///
-    /// ## Example
-    /// ```
-    /// # use engineio::EngineError;
-    /// let e = EngineError::invalid_data("Data was invalid.");
-    /// ```
-    pub fn invalid_data<E: Into<Box<Error + Send + Sync>>>(err: E) -> EngineError {
-        EngineError::InvalidData(err.into())
-    }
-
     /// Creates an `EngineError::InvalidState` variant. Mainly
     /// used in combination with string literals.
     ///
@@ -107,7 +90,6 @@ impl Error for EngineError {
             EngineError::Base64(ref err) => err.description(),
             EngineError::Decode(ref err) => err.description(),
             EngineError::Http(ref err) => err.description(),
-            EngineError::InvalidData(ref err) => err.description(),
             EngineError::InvalidState(ref err) => err.description(),
             EngineError::Io(ref err) => err.description(),
             EngineError::Utf8 => "UTF-8 data was invalid.",
@@ -121,7 +103,6 @@ impl Error for EngineError {
             EngineError::Base64(ref err) => Some(err),
             EngineError::Decode(ref err) => Some(err),
             EngineError::Http(ref err) => Some(err),
-            EngineError::InvalidData(ref err) => err.cause(),
             EngineError::InvalidState(ref err) => err.cause(),
             EngineError::Io(ref err) => Some(err),
             EngineError::Utf8 => None,

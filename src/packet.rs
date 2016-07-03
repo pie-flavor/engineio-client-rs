@@ -107,7 +107,7 @@ impl Packet {
                 return Err(IoError::new(ErrorKind::UnexpectedEof, READER_UNEXPECTED_EOF).into());
             }
             let data_length_str = try!(from_utf8(&buf[..buf.len() - 1]));
-            try!(data_length_str.parse::<usize>().map_err(|_| EngineError::invalid_data(DATA_LENGTH_INVALID)))
+            try!(data_length_str.parse::<usize>().map_err(|_| EngineError::Io(IoError::new(ErrorKind::InvalidData, DATA_LENGTH_INVALID))))
         };
 
         let mut string = String::with_capacity(data_length);
@@ -137,7 +137,7 @@ impl Packet {
             },
             Some(ch) => {
                 let msg = format(format_args!("Invalid opcode character or binary indicator found (First character must be 0-6 or b): '{}'.", ch));
-                Err(EngineError::invalid_data(msg))
+                Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, msg)))
             },
             None => Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)))
         }
@@ -248,14 +248,14 @@ impl OpCode {
     pub fn from_char(value: char) -> Result<OpCode, EngineError> {
         match value.to_digit(10) {
             Some(val) => OpCode::from_u8(val as u8),
-            None => Err(EngineError::invalid_data("Opcode character was not a digit."))
+            None => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, "Opcode character was not a digit.")))
         }
     }
 
     /// Tries to parse an OpCode from a scalar value encoded as string.
     pub fn from_str(value: &str) -> Result<OpCode, EngineError> {
         if !value.is_empty() {
-            let res = value.parse::<u8>().map_err(|_| EngineError::invalid_data("Could not parse opcode value to integer."));
+            let res = value.parse::<u8>().map_err(|_| EngineError::Io(IoError::new(ErrorKind::InvalidData, "Could not parse opcode value to integer.")));
             OpCode::from_u8(try!(res))
         } else {
             Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, "String slice to convert to opcode is empty.")))
@@ -272,7 +272,7 @@ impl OpCode {
             4 => Ok(OpCode::Message),
             5 => Ok(OpCode::Upgrade),
             6 => Ok(OpCode::Noop),
-            _ => Err(EngineError::invalid_data("Invalid opcode value. Valid values are in the range of [0, 6]."))
+            _ => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, "Invalid opcode value. Valid values are in the range of [0, 6].")))
         }
     }
 

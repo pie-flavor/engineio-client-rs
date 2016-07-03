@@ -9,7 +9,7 @@
 //! indeed be used.
 
 use super::{append_eio_parameters, Config, Transport};
-use std::io::{BufReader, Cursor, ErrorKind, Write};
+use std::io::{BufReader, Cursor, Error as IoError, ErrorKind, Write};
 use std::sync::mpsc::{channel, Receiver, Sender, SendError};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -35,7 +35,7 @@ pub fn connect_async(url: Url) -> Future<Config, EngineError> {
     poll_async(url, Duration::from_secs(5), None).and_then(|packets| {
         match *packets[0].payload() {
             Payload::String(ref str) => decode(str).map_err(|err| err.into()),
-            Payload::Binary(_) => Err(EngineError::invalid_data("Received binary packet when string packet was expected in session initialization."))
+            Payload::Binary(_) => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, "Received binary packet when string packet was expected in session initialization.")))
         }
     })
 }
