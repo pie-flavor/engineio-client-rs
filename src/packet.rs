@@ -6,7 +6,7 @@
 
 use std::fmt::{Display, format, Formatter, Result as FmtResult};
 use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
-use std::str::from_utf8;
+use std::str::{FromStr, from_utf8};
 use ::EngineError;
 use rustc_serialize::Decodable;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
@@ -121,28 +121,6 @@ impl Packet {
         Packet::from_str(&string)
     }
 
-    /// Parses a packet from a string slice.
-    pub fn from_str(buf: &str) -> Result<Self, EngineError> {
-        let mut chars = buf.chars();
-        match chars.nth(0) {
-            Some('b') => {
-                let opcode_char = try!(chars.nth(0).ok_or(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)));
-                let opcode = try!(OpCode::from_char(opcode_char));
-                let b64 = try!(buf[2..].from_base64());
-                Ok(Packet::with_binary(opcode, b64))
-            },
-            Some(ch @ '0'...'6') => {
-                let opcode = try!(OpCode::from_char(ch));
-                Ok(Packet::with_str(opcode, &buf[1..]))
-            },
-            Some(ch) => {
-                let msg = format(format_args!("Invalid opcode character or binary indicator found (First character must be 0-6 or b): '{}'.", ch));
-                Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, msg)))
-            },
-            None => Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)))
-        }
-    }
-
     /// Gets the opcode.
     pub fn opcode(&self) -> OpCode {
         self.opcode
@@ -199,6 +177,32 @@ impl Default for Packet {
 impl Display for Packet {
     fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
         write_packet!(self, formatter)
+    }
+}
+
+impl FromStr for Packet {
+    type Err = EngineError;
+
+    /// Parses a packet from a string slice.
+    fn from_str(buf: &str) -> Result<Self, Self::Err> {
+        let mut chars = buf.chars();
+        match chars.nth(0) {
+            Some('b') => {
+                let opcode_char = try!(chars.nth(0).ok_or(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)));
+                let opcode = try!(OpCode::from_char(opcode_char));
+                let b64 = try!(buf[2..].from_base64());
+                Ok(Packet::with_binary(opcode, b64))
+            },
+            Some(ch @ '0'...'6') => {
+                let opcode = try!(OpCode::from_char(ch));
+                Ok(Packet::with_str(opcode, &buf[1..]))
+            },
+            Some(ch) => {
+                let msg = format(format_args!("Invalid opcode character or binary indicator found (First character must be 0-6 or b): '{}'.", ch));
+                Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, msg)))
+            },
+            None => Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)))
+        }
     }
 }
 
@@ -403,7 +407,7 @@ mod tests {
 
     #[test]
     fn packet_empty_string_decoding() {
-        let p = Packet::from_str("4").expect("Failed to parse empty string packet.");
+        let p = "4".parse::<Packet>().expect("Failed to parse empty string packet.");
         if let Payload::String(str) = p.payload {
             assert!(p.opcode == OpCode::Message);
             assert!(str.is_empty());
@@ -414,7 +418,7 @@ mod tests {
 
     #[test]
     fn packet_empty_binary_decoding() {
-        let p = Packet::from_str("b4").expect("Failed to parse empty string packet.");
+        let p = "b4".parse::<Packet>().expect("Failed to parse empty string packet.");
         if let Payload::Binary(vec) = p.payload {
             assert!(p.opcode == OpCode::Message);
             assert!(vec.len() == 0);
