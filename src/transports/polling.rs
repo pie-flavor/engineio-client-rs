@@ -284,7 +284,6 @@ mod test {
     use super::*;
 
     #[test]
-    #[ignore]
     fn connection() {
         use ::{EngineEvent, OpCode, Packet};
         use std::sync::mpsc::channel;
@@ -294,7 +293,7 @@ mod test {
         use url::Url;
 
         let (tx, rx) = channel();
-        let mut p = Polling::new(Url::parse("http://festify.us:5000/engine.io/").unwrap(), move |ev| {
+        let mut p = Polling::new(Url::parse("http://festify.us:5002/engine.io/").unwrap(), move |ev| {
             match ev {
                 EngineEvent::Connect(_) => tx.send("connect".to_owned()).unwrap(),
                 EngineEvent::ConnectError(_) => tx.send("connect_error".to_owned()).unwrap(),
