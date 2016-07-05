@@ -17,6 +17,7 @@ extern crate lazy_static;
 extern crate rand;
 extern crate rustc_serialize;
 extern crate url;
+extern crate threadpool;
 extern crate ws;
 
 mod client;

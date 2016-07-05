@@ -18,6 +18,7 @@ use eventual::{Async, AsyncError, Complete, Future};
 use hyper::{Client, Error as HttpError};
 use packet::{OpCode, Packet, Payload};
 use rustc_serialize::json::decode;
+use threadpool::ThreadPool;
 use url::Url;
 
 const EVENT_CHANNEL_DISCONNECTED: &'static str = "Event channel was disconnected. This means the connection has been shut down or an error occured.";
@@ -32,7 +33,8 @@ lazy_static! {
 }
 
 pub fn connect_async(url: Url) -> Future<Config, EngineError> {
-    poll_async(url, Duration::from_secs(5), None).and_then(|packets| {
+    let tp = ThreadPool::new(1);
+    poll_async(&tp, url, Duration::from_secs(5), None).and_then(|packets| {
         match *packets[0].payload() {
             Payload::String(ref str) => decode(str).map_err(|err| err.into()),
             Payload::Binary(_) => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, "Received binary packet when string packet was expected in session initialization.")))
@@ -140,12 +142,14 @@ fn handle_polling<C>(url: Url, mut callback: C, cfg: Config, ev_rx: Receiver<Pol
         callback(EngineEvent::Connect(&cfg));
     }
 
-    let mut packet_buffer = Vec::new();
     let mut is_paused = false;
+    let mut packet_buffer = Vec::new();
+    let thread_pool = ThreadPool::new_with_name("Engine.io worker thread".to_owned(), 4);
     loop {
         let (pack_tx, pack_rx) = channel();
         if !is_paused {
             poll_async(
+                &thread_pool,
                 url.clone(),
                 cfg.ping_timeout(),
                 Some(cfg.sid().to_owned())
@@ -173,7 +177,7 @@ fn handle_polling<C>(url: Url, mut callback: C, cfg: Config, ev_rx: Receiver<Pol
 
                         if !is_paused {
                             for (tx, packets) in packet_buffer.drain(..) {
-                                send_async(url.clone(), cfg.sid().to_owned(), packets).receive(|res| {
+                                send_async(&thread_pool, url.clone(), cfg.sid().to_owned(), packets).receive(|res| {
                                     match res {
                                         Ok(_) => tx.complete(()),
                                         Err(AsyncError::Failed(err)) => tx.fail(err),
@@ -186,7 +190,7 @@ fn handle_polling<C>(url: Url, mut callback: C, cfg: Config, ev_rx: Receiver<Pol
                     Ok(PollEvent::Start(tx)) => {
                         is_paused = false;
                         for (tx, packets) in packet_buffer.drain(..) {
-                            send_async(url.clone(), cfg.sid().to_owned(), packets).receive(|res| {
+                            send_async(&thread_pool, url.clone(), cfg.sid().to_owned(), packets).receive(|res| {
                                 match res {
                                     Ok(_) => tx.complete(()),
                                     Err(AsyncError::Failed(err)) => tx.fail(err),
@@ -233,9 +237,9 @@ fn poll(mut url: Url, timeout: Duration, sid: Option<&str>) -> Result<Vec<Packet
     }
 }
 
-fn poll_async(url: Url, timeout: Duration, sid: Option<String>) -> Future<Vec<Packet>, EngineError> {
+fn poll_async(tp: &ThreadPool, url: Url, timeout: Duration, sid: Option<String>) -> Future<Vec<Packet>, EngineError> {
     let (tx, f) = Future::pair();
-    thread::spawn(move || {
+    tp.execute(move || {
         let poll_res = poll(url, timeout, match sid {
             Some(ref string) => Some(string),
             None => None
@@ -264,9 +268,9 @@ fn send(mut url: Url, sid: &str, packets: Vec<Packet>) -> Result<(), EngineError
     }
 }
 
-fn send_async(url: Url, sid: String, packets: Vec<Packet>) -> Future<(), EngineError> {
+fn send_async(tp: &ThreadPool, url: Url, sid: String, packets: Vec<Packet>) -> Future<(), EngineError> {
     let (tx, f) = Future::pair();
-    thread::spawn(move || {
+    tp.execute(move || {
         match send(url, &sid, packets){
             Ok(_) => tx.complete(()),
             Err(err) => tx.fail(err)
