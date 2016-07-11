@@ -79,23 +79,23 @@ impl Drop for Socket {
 }
 
 impl Transport for Socket {
-    fn close(&mut self) -> Result<(), EngineError> {
+    fn close(&self) -> Result<(), EngineError> {
         self.sender.shutdown().map_err(|err| err.into())
     }
 
-    fn pause(&mut self) -> Result<(), EngineError> {
+    fn pause(&self) -> Result<(), EngineError> {
         self.is_paused = true;
         Ok(())
     }
 
-    fn send(&mut self, msgs: Vec<Packet>) -> Result<(), EngineError> {
+    fn send(&self, msgs: Vec<Packet>) -> Result<(), EngineError> {
         if !self.is_paused {
             try!(self.do_send(msgs))
         }
         Ok(())
     }
 
-    fn start(&mut self) -> Result<(), EngineError> {
+    fn start(&self) -> Result<(), EngineError> {
         self.is_paused = false;
         Ok(())
     }

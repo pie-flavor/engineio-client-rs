@@ -61,7 +61,7 @@ impl Connection {
                 state.url = Some(url);
             }
 
-            if let Some(mut transport) = mem::replace(&mut state.transport, Some(conn)) {
+            if let Some(transport) = mem::replace(&mut state.transport, Some(conn)) {
                 transport.close().fire();
             }
 
@@ -104,7 +104,7 @@ impl Connection {
     /// has been performed because there was no connection to
     /// disconnect in the first place.
     pub fn disconnect(&self) -> Future<bool, EngineError> {
-        if let Some(mut transport) = self.0.lock().expect(STATE_POISONED).transport.take() {
+        if let Some(transport) = self.0.lock().expect(STATE_POISONED).transport.take() {
             transport.close().map(|_| true)
         } else {
             Future::of(false)
@@ -116,8 +116,8 @@ impl Connection {
     /// ## Remarks
     /// The method buffers the packet when one tries to send a
     /// packet while a connection upgrade is taking place.
-    pub fn send_all(&mut self, packets: Vec<Packet>) -> Future<(), EngineError> {
-        if let Some(ref mut transport) = self.0.lock().expect(STATE_POISONED).transport {
+    pub fn send_all(&self, packets: Vec<Packet>) -> Future<(), EngineError> {
+        if let Some(ref transport) = self.0.lock().expect(STATE_POISONED).transport {
             transport.send(packets)
         } else {
             Future::error(EngineError::invalid_state("Connection was not connected."))

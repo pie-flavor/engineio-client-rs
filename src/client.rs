@@ -24,7 +24,7 @@ impl Client {
 
     /// Initializes a new client and connects to the given endpoint.
     pub fn with_url<U: Borrow<Url>>(url: &U) -> Future<Client, EngineError> {
-        let mut c = Client::new();
+        let c = Client::new();
         c.connect(url).map(move |_| c)
     }
 
@@ -35,7 +35,7 @@ impl Client {
     /// before and a new connection has been established, otherwise `false`.
     /// In the case of `false` the future returns instantly without an async
     /// computation in the background.
-    pub fn connect<U: Borrow<Url>>(&mut self, url: &U) -> Future<bool, EngineError> {
+    pub fn connect<U: Borrow<Url>>(&self, url: &U) -> Future<bool, EngineError> {
         if !self.is_connected() {
             self.connection.connect_with_default_if_none(url.borrow().clone(), self.handlers.clone())
                            .map(|_| true)
@@ -50,7 +50,7 @@ impl Client {
     }
 
     /// Disconnects the client from the endpoint.
-    pub fn disconnect(&mut self) -> Future<bool, EngineError> {
+    pub fn disconnect(&self) -> Future<bool, EngineError> {
         if self.is_connected() {
             self.connection.disconnect().map(|_| true)
         } else {
@@ -73,7 +73,7 @@ impl Client {
     /// ## Remarks
     /// The method buffers the packet when one tries to send a
     /// packet while a connection upgrade is taking place.
-    pub fn send(&mut self, packet: Packet) -> Future<(), EngineError> {
+    pub fn send(&self, packet: Packet) -> Future<(), EngineError> {
         self.send_all(vec![packet])
     }
 
@@ -82,7 +82,7 @@ impl Client {
     /// ## Remarks
     /// The method buffers the packet when one tries to send a
     /// packet while a connection upgrade is taking place.
-    pub fn send_all(&mut self, packets: Vec<Packet>) -> Future<(), EngineError> {
+    pub fn send_all(&self, packets: Vec<Packet>) -> Future<(), EngineError> {
         self.connection.send_all(packets)
     }
 }

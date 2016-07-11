@@ -92,7 +92,7 @@ impl Drop for Polling {
 }
 
 impl Transport for Polling {
-    fn close(&mut self) -> Future<(), EngineError> {
+    fn close(&self) -> Future<(), EngineError> {
         let (tx, f) = Future::pair();
         if let Err(SendError(PollEvent::Close(tx))) = self.0.send(PollEvent::Close(tx)){
             // Never mind if we fail to transmit the poll event here.
@@ -103,7 +103,7 @@ impl Transport for Polling {
         f
     }
 
-    fn pause(&mut self) -> Future<(), EngineError> {
+    fn pause(&self) -> Future<(), EngineError> {
         let (tx, f) = Future::pair();
         if let Err(SendError(PollEvent::Pause(tx))) = self.0.send(PollEvent::Pause(tx)) {
             tx.fail(EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
@@ -111,7 +111,7 @@ impl Transport for Polling {
         f
     }
 
-    fn send(&mut self, msgs: Vec<Packet>) -> Future<(), EngineError> {
+    fn send(&self, msgs: Vec<Packet>) -> Future<(), EngineError> {
         let (tx, f) = Future::pair();
         if let Err(SendError(PollEvent::Send(_, tx))) = self.0.send(PollEvent::Send(msgs, tx)) {
             tx.fail(EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
@@ -119,7 +119,7 @@ impl Transport for Polling {
         f
     }
 
-    fn start(&mut self) -> Future<(), EngineError> {
+    fn start(&self) -> Future<(), EngineError> {
         let (tx, f) = Future::pair();
         if let Err(SendError(PollEvent::Start(tx))) = self.0.send(PollEvent::Start(tx)) {
             tx.fail(EngineError::invalid_state(EVENT_CHANNEL_DISCONNECTED))
@@ -293,7 +293,7 @@ mod test {
         use url::Url;
 
         let (tx, rx) = channel();
-        let mut p = Polling::new(Url::parse("http://festify.us:5002/engine.io/").unwrap(), move |ev| {
+        let p = Polling::new(Url::parse("http://festify.us:5002/engine.io/").unwrap(), move |ev| {
             match ev {
                 EngineEvent::Connect(_) => tx.send("connect".to_owned()).unwrap(),
                 EngineEvent::ConnectError(_) => tx.send("connect_error".to_owned()).unwrap(),

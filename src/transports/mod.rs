@@ -27,17 +27,17 @@ thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 /// communicate over the socket.
 pub trait Transport : Debug {
     /// Asynchronously closes the transport.
-    fn close(&mut self) -> Future<(), EngineError>;
+    fn close(&self) -> Future<(), EngineError>;
 
     /// Pauses the transport so that the buffers are flushed and
     /// no more messages are sent.
-    fn pause(&mut self) -> Future<(), EngineError>;
+    fn pause(&self) -> Future<(), EngineError>;
 
     /// Sends a list of messages through the transport.
-    fn send(&mut self, Vec<Packet>) -> Future<(), EngineError>;
+    fn send(&self, Vec<Packet>) -> Future<(), EngineError>;
 
     /// Restarts the transport when it has been paused.
-    fn start(&mut self) -> Future<(), EngineError>;
+    fn start(&self) -> Future<(), EngineError>;
 }
 
 #[allow(non_snake_case)]
