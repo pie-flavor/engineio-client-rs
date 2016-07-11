@@ -1,4 +1,5 @@
 use std::borrow::Borrow;
+use std::ops::DerefMut;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::sync::{Arc, Mutex};
 use ::{Callbacks, EngineError, EngineEvent, HANDLER_LOCK_POISONED, Packet};
@@ -36,8 +37,14 @@ impl Client {
     /// In the case of `false` the future returns instantly without an async
     /// computation in the background.
     pub fn connect<U: Borrow<Url>>(&self, url: &U) -> Future<bool, EngineError> {
-        if !self.is_connected() {
-            self.connection.connect_with_default_if_none(url.borrow().clone(), self.handlers.clone())
+        if self.state() != State::Connected {
+            let handlers = self.handlers.clone();
+            let callback_b = Box::new(move |ev: EngineEvent| {
+                for func in handlers.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                    func(ev.clone());
+                }
+            });
+            self.connection.connect_with_default_if_none(url.borrow().clone(), callback_b)
                            .map(|_| true)
         } else {
             Future::of(false)
@@ -51,16 +58,11 @@ impl Client {
 
     /// Disconnects the client from the endpoint.
     pub fn disconnect(&self) -> Future<bool, EngineError> {
-        if self.is_connected() {
+        if self.state() == State::Connected {
             self.connection.disconnect().map(|_| true)
         } else {
             Future::of(false)
         }
-    }
-
-    /// Returns whether the client is connected or not.
-    pub fn is_connected(&self) -> bool {
-        self.connection.state() == State::Connected
     }
 
     /// Registers a callback for event receival.
@@ -84,6 +86,11 @@ impl Client {
     /// packet while a connection upgrade is taking place.
     pub fn send_all(&self, packets: Vec<Packet>) -> Future<(), EngineError> {
         self.connection.send_all(packets)
+    }
+
+    /// Gets the connection state.
+    pub fn state(&self) -> State {
+        self.connection.state()
     }
 }
 

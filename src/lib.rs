@@ -38,7 +38,7 @@ const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler callbacks
 pub type Callbacks = Arc<Mutex<Vec<Box<FnMut(EngineEvent) + 'static + Send>>>>;
 
 /// An event that can occur within a connection.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum EngineEvent<'a> {
     /// Fired when an engine.io connection is made.
     Connect(&'a transports::Config),
@@ -60,5 +60,5 @@ pub enum EngineEvent<'a> {
 }
 
 #[doc(hidden)]
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum Void {}

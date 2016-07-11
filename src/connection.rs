@@ -1,8 +1,7 @@
 use super::*;
-use ::HANDLER_LOCK_POISONED;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::mem;
-use std::ops::{Deref, DerefMut};
+use std::ops::{Deref};
 use std::sync::{Arc, Mutex, RwLock};
 use eventual::{Async, Future};
 use transports::*;
@@ -31,7 +30,6 @@ impl Connection {
     /// `/socket.io/` for socket.io transports) must already be set.
     pub fn new() -> Connection {
         Connection(Arc::new(Mutex::new(ConnectionState {
-            callbacks: None,
             cfg: None,
             transport: None,
             connection_state_lock: Arc::new(RwLock::new(State::Pending)),
@@ -41,7 +39,7 @@ impl Connection {
 
     /// Closes the current connection, if one is present, and opens up
     /// a new one to the specified URL.
-    pub fn connect(&self, url: Url, callbacks: Callbacks) -> Future<(), EngineError> {
+    pub fn connect(&self, url: Url, callback: Box<FnMut(EngineEvent) + 'static + Send>) -> Future<(), EngineError> {
         assert!(!url.cannot_be_a_base(), "URL must be able to be a base.");
         assert!(url.scheme() == "http" || url.scheme() == "https", "Url must be an HTTP or HTTPS url.");
         assert!(!url.path().is_empty(), "Path must be set.");
@@ -52,10 +50,9 @@ impl Connection {
         };
         let state = self.0.clone();
 
-        create_connection(url.clone(), callbacks.clone(), connection_connection_state_lock).and_then(move |conn| {
+        create_connection(url.clone(), callback, connection_connection_state_lock).and_then(move |conn| {
             let mut state = state.lock().expect(STATE_POISONED);
             {
-                state.callbacks = Some(callbacks);
                 state.cfg = Some(conn.cfg().clone());
                 *state.connection_state_lock.write().expect(CONNECTION_STATE_POISONED) = State::Connected;
                 state.url = Some(url);
@@ -70,24 +67,24 @@ impl Connection {
     }
 
     /// Initializes a new connection to the `/engine.io/`-path of the specified endpoint.
-    pub fn connect_with_default(&self, url: Url, callbacks: Callbacks) -> Future<(), EngineError> {
-        self.connect_with_path(url, "/engine.io/", callbacks)
+    pub fn connect_with_default(&self, url: Url, callback: Box<FnMut(EngineEvent) + 'static + Send>) -> Future<(), EngineError> {
+        self.connect_with_path(url, "/engine.io/", callback)
     }
 
     /// Initializes a new connection to the default path if there isn't
     /// one already inside the URL.
-    pub fn connect_with_default_if_none(&self, url: Url, callbacks: Callbacks) -> Future<(), EngineError> {
+    pub fn connect_with_default_if_none(&self, url: Url, callback: Box<FnMut(EngineEvent) + 'static + Send>) -> Future<(), EngineError> {
         if url.path().is_empty() {
-            self.connect_with_default(url, callbacks)
+            self.connect_with_default(url, callback)
         } else {
-            self.connect(url, callbacks)
+            self.connect(url, callback)
         }
     }
 
     /// Initializes a new connection to the specified path of the endpoint.
-    pub fn connect_with_path(&self, mut url: Url, path: &str, callbacks: Callbacks) -> Future<(), EngineError> {
+    pub fn connect_with_path(&self, mut url: Url, path: &str, callback: Box<FnMut(EngineEvent) + 'static + Send>) -> Future<(), EngineError> {
         url.set_path(path);
-        self.connect(url, callbacks)
+        self.connect(url, callback)
     }
 
     /// Gets the connection config.
@@ -152,7 +149,6 @@ impl Default for State {
 }
 
 struct ConnectionState {
-    callbacks: Option<Callbacks>,
     cfg: Option<Config>,
     connection_state_lock: Arc<RwLock<State>>,
     transport: Option<Polling>,
@@ -163,53 +159,41 @@ impl Debug for ConnectionState {
     fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
         write!(
             formatter,
-            "Connection {{ callbacks: ..., cfg: {:?}, connection_state: {:?}, transport: {:?}, url: {:?} }}",
+            "Connection {{ callback: ..., cfg: {:?}, connection_state: {:?}, transport: {:?}, url: {:?} }}",
             self.cfg, self.connection_state_lock, self.transport, self.url
         )
     }
 }
 
-fn create_connection(url: Url, callbacks: Callbacks, connection_state_lock: Arc<RwLock<State>>) -> Future<Polling, EngineError> {
+fn create_connection(url: Url, mut callback: Box<FnMut(EngineEvent) + 'static + Send>, connection_state_lock: Arc<RwLock<State>>) -> Future<Polling, EngineError> {
     Polling::new(url.clone(), move |ev| {
-        let on_disconnect = || {
-            {
-                let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
-                *state_val = State::Disconnected;
-            }
-            for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
-                func(EngineEvent::Disconnect);
-            }
-        };
-
         match ev {
-            EngineEvent::Connect(c) => {
-                for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
-                    func(EngineEvent::Connect(c));
+            EngineEvent::Connect(c) => callback(EngineEvent::Connect(c)),
+            EngineEvent::ConnectError(err) => callback(EngineEvent::ConnectError(err)),
+            EngineEvent::Disconnect => {
+                {
+                    let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
+                    *state_val = State::Disconnected;
                 }
+                callback(EngineEvent::Disconnect);
             },
-            EngineEvent::ConnectError(err) => {
-                for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
-                    func(EngineEvent::ConnectError(err));
-                }
-            },
-            EngineEvent::Disconnect => on_disconnect(),
             EngineEvent::Error(ref err) => {
                 {
                     let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
                     *state_val = State::Disconnected;
                 }
-                for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
-                    func(EngineEvent::Error(err));
-                }
+                callback(EngineEvent::Error(err));
             },
             EngineEvent::Message(ref pck) => {
                 match pck.opcode() {
-                    OpCode::Close => on_disconnect(),
-                    OpCode::Message | OpCode::Pong => {
-                        for func in callbacks.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
-                            func(EngineEvent::Message(pck));
+                    OpCode::Close => {
+                        {
+                            let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
+                            *state_val = State::Disconnected;
                         }
+                        callback(EngineEvent::Disconnect);
                     },
+                    OpCode::Message | OpCode::Pong => callback(EngineEvent::Message(pck)),
                     OpCode::Noop => {},
                     o @ OpCode::Open |
                     o @ OpCode::Ping |
