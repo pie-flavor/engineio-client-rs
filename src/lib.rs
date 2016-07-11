@@ -16,8 +16,9 @@ extern crate hyper;
 extern crate lazy_static;
 extern crate rand;
 extern crate rustc_serialize;
-extern crate url;
 extern crate threadpool;
+extern crate url;
+extern crate uuid;
 extern crate ws;
 
 mod client;
@@ -26,16 +27,12 @@ mod error;
 mod packet;
 mod transports;
 
-use std::sync::{Arc, Mutex};
-
-pub use client::Client;
+pub use client::{Client, Registration};
 pub use connection::Connection;
 pub use error::EngineError;
 pub use packet::{OpCode, Packet, Payload};
 
 const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler callbacks lock.";
-
-pub type Callbacks = Arc<Mutex<Vec<Box<FnMut(EngineEvent) + 'static + Send>>>>;
 
 /// An event that can occur within a connection.
 #[derive(Clone, Debug)]

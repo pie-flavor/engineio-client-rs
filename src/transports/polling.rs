@@ -53,19 +53,19 @@ impl Polling {
     /// ## Parameters
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
     ///   of the server to connect to.
-    /// - `callbacks: Callbacks`: Callbacks to call when asynchronous events are ready.
+    /// - `callback: C`: Callback to call when asynchronous events are ready.
     pub fn new<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C) -> Future<Polling, EngineError> {
         connect_async(url.clone()).map(move |cfg| Polling::create(url, callback, cfg, false))
     }
 
     /// Creates a new instance of a long polling transport from a given
     /// configuration (i.e. a reconnection). This does not fire the
-    /// `connect`-callbacks.
+    /// `connect`-callback.
     ///
     /// ## Parameters
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
     ///   of the server to connect to.
-    /// - `callbacks: Callbacks`: Callbacks to call when asynchronous events are ready.
+    /// - `callback: C`: Callback to call when asynchronous events are ready.
     /// - `cfg: Config`: A transport configuration used to recreate the
     ///   transport after it has been interrupted by network issues.
     pub fn with_cfg<C: FnMut(EngineEvent) + Send + 'static>(url: Url, callback: C, cfg: Config) -> Polling {

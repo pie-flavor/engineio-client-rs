@@ -33,7 +33,7 @@ impl Socket {
     /// ## Parameters
     /// - `url: Url`: The _full_ URL (i.e. including the `/engine.io/`-path)
     ///   of the server to connect to.
-    /// - `callbacks: Callbacks`: Callbacks to call when asynchronous events are ready.
+    /// - `callback: C`: Callback to call when asynchronous events are ready.
     /// - `cfg: Config`: A transport configuration used to initialize session.
     pub fn new<C: FnMut(EngineEvent) + Send + 'static>(mut url: Url, callback: C, cfg: Config) -> Socket {
         append_eio_parameters(&mut url, Some(cfg.sid()));

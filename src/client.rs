@@ -1,11 +1,15 @@
 use std::borrow::Borrow;
-use std::ops::DerefMut;
+use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use std::sync::{Arc, Mutex};
-use ::{Callbacks, EngineError, EngineEvent, HANDLER_LOCK_POISONED, Packet};
+use std::sync::{Arc, Mutex, Weak};
+use ::{EngineError, EngineEvent, HANDLER_LOCK_POISONED, Packet};
 use connection::{Connection, State};
 use eventual::{Async, Future};
 use url::Url;
+use uuid::Uuid;
+
+type Callbacks = Arc<Mutex<CallbacksDictionary>>;
+type CallbacksDictionary = HashMap<Uuid, Box<FnMut(EngineEvent) + 'static + Send>>;
 
 /// An instance of an engine.io connection.
 #[derive(Clone)]
@@ -19,7 +23,7 @@ impl Client {
     pub fn new() -> Client {
         Client {
             connection: Connection::new(),
-            handlers: Arc::new(Mutex::new(Vec::new()))
+            handlers: Arc::new(Mutex::new(HashMap::new()))
         }
     }
 
@@ -40,7 +44,7 @@ impl Client {
         if self.state() != State::Connected {
             let handlers = self.handlers.clone();
             let callback_b = Box::new(move |ev: EngineEvent| {
-                for func in handlers.lock().expect(HANDLER_LOCK_POISONED).deref_mut() {
+                for func in handlers.lock().expect(HANDLER_LOCK_POISONED).values_mut() {
                     func(ev.clone());
                 }
             });
@@ -66,8 +70,10 @@ impl Client {
     }
 
     /// Registers a callback for event receival.
-    pub fn register<H: FnMut(EngineEvent) + 'static + Send>(&self, handler: H) {
-        self.handlers.lock().expect(HANDLER_LOCK_POISONED).push(Box::new(handler));
+    pub fn register<H: FnMut(EngineEvent) + 'static + Send>(&self, handler: H) -> Registration {
+        let uuid = Uuid::new_v4();
+        self.handlers.lock().expect(HANDLER_LOCK_POISONED).insert(uuid.clone(), Box::new(handler));
+        Registration(Arc::downgrade(&self.handlers), uuid)
     }
 
     /// Sends a packet to the other endpoint.
@@ -103,5 +109,19 @@ impl Debug for Client {
 impl Drop for Client {
     fn drop(&mut self) {
         let _ = self.disconnect().await();
+    }
+}
+
+/// Represents a callback registration. Use this to unregister
+/// a previously registered engine.io callback.
+#[derive(Clone)]
+pub struct Registration(Weak<Mutex<CallbacksDictionary>>, Uuid);
+
+impl Registration {
+    /// Unregisters the callback from the engine.io client.
+    pub fn unregister(self) {
+        if let Some(arc) = self.0.upgrade() {
+            arc.lock().expect(HANDLER_LOCK_POISONED).remove(&self.1);
+        }
     }
 }
