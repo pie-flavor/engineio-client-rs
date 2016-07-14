@@ -114,14 +114,22 @@ impl Drop for Client {
 
 /// Represents a callback registration. Use this to unregister
 /// a previously registered engine.io callback.
+///
+/// The callback is _not_ unregistered when this struct is dropped.
 #[derive(Clone)]
 pub struct Registration(Weak<Mutex<CallbacksDictionary>>, Uuid);
 
 impl Registration {
     /// Unregisters the callback from the engine.io client.
     pub fn unregister(self) {
-        if let Some(arc) = self.0.upgrade() {
-            arc.lock().expect(HANDLER_LOCK_POISONED).remove(&self.1);
+        if let Some(dict) = self.0.upgrade() {
+            dict.lock().expect(HANDLER_LOCK_POISONED).remove(&self.1);
         }
+    }
+}
+
+impl Debug for Registration {
+    fn fmt(&self, formatter: &mut Formatter) -> FmtResult {
+        write!(formatter, "Registration(..., {:?})", self.1)
     }
 }

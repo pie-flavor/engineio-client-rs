@@ -10,7 +10,7 @@
 #![crate_type = "lib"]
 #![feature(custom_derive, io, mpsc_select)]
 
-pub extern crate eventual;
+extern crate eventual;
 extern crate hyper;
 #[macro_use]
 extern crate lazy_static;
