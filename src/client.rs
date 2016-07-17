@@ -2,6 +2,7 @@ use std::borrow::Borrow;
 use std::collections::HashMap;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::sync::{Arc, Mutex, Weak};
+use std::sync::mpsc::{IntoIter, sync_channel};
 use ::{EngineError, EngineEvent, HANDLER_LOCK_POISONED, Packet};
 use connection::{Connection, State};
 use eventual::{Async, Future};
@@ -9,7 +10,7 @@ use url::Url;
 use uuid::Uuid;
 
 type Callbacks = Arc<Mutex<CallbacksDictionary>>;
-type CallbacksDictionary = HashMap<Uuid, Box<FnMut(EngineEvent) + 'static + Send>>;
+type CallbacksDictionary = HashMap<Uuid, Box<FnMut(&EngineEvent) + 'static + Send>>;
 
 /// An instance of an engine.io connection.
 #[derive(Clone)]
@@ -45,7 +46,7 @@ impl Client {
             let handlers = self.handlers.clone();
             let callback_b = Box::new(move |ev: EngineEvent| {
                 for func in handlers.lock().expect(HANDLER_LOCK_POISONED).values_mut() {
-                    func(ev.clone());
+                    func(&ev);
                 }
             });
             self.connection.connect_with_default_if_none(url.borrow().clone(), callback_b)
@@ -70,7 +71,7 @@ impl Client {
     }
 
     /// Registers a callback for event receival.
-    pub fn register<H: FnMut(EngineEvent) + 'static + Send>(&self, handler: H) -> Registration {
+    pub fn register<H: FnMut(&EngineEvent) + 'static + Send>(&self, handler: H) -> Registration {
         let uuid = Uuid::new_v4();
         self.handlers.lock().expect(HANDLER_LOCK_POISONED).insert(uuid.clone(), Box::new(handler));
         Registration(Arc::downgrade(&self.handlers), uuid)

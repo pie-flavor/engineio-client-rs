@@ -177,14 +177,14 @@ fn create_connection(url: Url, mut callback: Box<FnMut(EngineEvent) + 'static + 
                 }
                 callback(EngineEvent::Disconnect);
             },
-            EngineEvent::Error(ref err) => {
+            EngineEvent::Error(err) => {
                 {
                     let mut state_val = connection_state_lock.write().expect(CONNECTION_STATE_POISONED);
                     *state_val = State::Disconnected;
                 }
                 callback(EngineEvent::Error(err));
             },
-            EngineEvent::Message(ref pck) => {
+            EngineEvent::Message(pck) => {
                 match pck.opcode() {
                     OpCode::Close => {
                         {

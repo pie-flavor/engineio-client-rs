@@ -94,7 +94,7 @@ impl Drop for Polling {
 impl Transport for Polling {
     fn close(&self) -> Future<(), EngineError> {
         let (tx, f) = Future::pair();
-        if let Err(SendError(PollEvent::Close(tx))) = self.0.send(PollEvent::Close(tx)){
+        if let Err(SendError(PollEvent::Close(tx))) = self.0.send(PollEvent::Close(tx)) {
             // Never mind if we fail to transmit the poll event here.
             // In case the channel is disconnected, the background thread
             // has hung up anyway and we're not connected anymore.
@@ -139,7 +139,7 @@ enum PollEvent {
 fn handle_polling<C>(url: Url, mut callback: C, cfg: Config, ev_rx: Receiver<PollEvent>, previously_connected: bool)
     where C: FnMut(EngineEvent) + Send + 'static {
     if !previously_connected {
-        callback(EngineEvent::Connect(&cfg));
+        callback(EngineEvent::Connect(cfg.clone()));
     }
 
     let mut is_paused = false;
@@ -207,13 +207,13 @@ fn handle_polling<C>(url: Url, mut callback: C, cfg: Config, ev_rx: Receiver<Pol
                 match recv_res {
                     Ok(Ok(packets)) => {
                         for packet in packets {
-                            callback(EngineEvent::Message(&packet));
+                            callback(EngineEvent::Message(packet));
                         }
                         break;
                     },
                     Ok(Err(AsyncError::Failed(err))) => {
                         let _ = writeln!(&mut ::std::io::stderr(), "Failed to receive packet: {:?}", &err);
-                        callback(EngineEvent::Error(&err));
+                        callback(EngineEvent::Error(err));
                         return;
                     },
                     _ => {}

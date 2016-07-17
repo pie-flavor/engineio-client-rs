@@ -35,22 +35,22 @@ pub use packet::{OpCode, Packet, Payload};
 const HANDLER_LOCK_POISONED: &'static str = "Failed to acquire handler callbacks lock.";
 
 /// An event that can occur within a connection.
-#[derive(Clone, Debug)]
-pub enum EngineEvent<'a> {
+#[derive(Debug)]
+pub enum EngineEvent {
     /// Fired when an engine.io connection is made.
-    Connect(&'a transports::Config),
+    Connect(transports::Config),
 
     /// Fired when an engine.io connection could not be established.
-    ConnectError(&'a EngineError),
+    ConnectError(EngineError),
 
     /// Fired when the connection is disconnected.
     Disconnect,
 
     /// Fired when the connection is disconnected due to an error.
-    Error(&'a EngineError),
+    Error(EngineError),
 
     /// Fired when a message is sent over the connection.
-    Message(&'a Packet),
+    Message(Packet),
 
     #[doc(hidden)]
     __Nonexhaustive(Void)
