@@ -41,6 +41,51 @@ pub struct Packet {
     payload: Payload
 }
 
+/// A packet opcode.
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, RustcEncodable, RustcDecodable)]
+#[repr(u8)]
+pub enum OpCode {
+    /// Sent from the server when a new connection is opened.
+    Open = 0,
+
+    /// Sent by the client to request the shutdown of the connection.
+    Close = 1,
+
+    /// A ping message sent by the client. The server will respond
+    /// with a `Pong` message containing the same data.
+    Ping = 2,
+
+    /// The answer to a ping message.
+    Pong = 3,
+
+    /// An actual data message.
+    Message = 4,
+
+    /// An upgrade message.
+    ///
+    /// Before engine.io switches a transport, it tests, if server and
+    /// client can communicate over the transport. If the test succeeds,
+    /// the client sends an upgrade packet over the old transport which
+    /// requests the server to flush its cache on the old transport and
+    /// switch to the new transport.
+    Upgrade = 5,
+
+    /// A noop packet.
+    ///
+    /// Used for forcing a polling cycle.
+    Noop = 6
+}
+
+/// The message's payload.
+#[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
+pub enum Payload {
+    /// The message contains binary data.
+    Binary(Vec<u8>),
+
+    /// The message contains UTF-8 string data.
+    String(String)
+}
+
 impl Packet {
     /// Constructs a new packet.
     pub fn new(opcode: OpCode, payload: Payload) -> Self {
@@ -212,41 +257,6 @@ impl From<Packet> for ws::Message {
     }
 }
 
-/// A packet opcode.
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, RustcEncodable, RustcDecodable)]
-#[repr(u8)]
-pub enum OpCode {
-    /// Sent from the server when a new connection is opened.
-    Open = 0,
-
-    /// Sent by the client to request the shutdown of the connection.
-    Close = 1,
-
-    /// A ping message sent by the client. The server will respond
-    /// with a `Pong` message containing the same data.
-    Ping = 2,
-
-    /// The answer to a ping message.
-    Pong = 3,
-
-    /// An actual data message.
-    Message = 4,
-
-    /// An upgrade message.
-    ///
-    /// Before engine.io switches a transport, it tests, if server and
-    /// client can communicate over the transport. If the test succeeds,
-    /// the client sends an upgrade packet over the old transport which
-    /// requests the server to flush its cache on the old transport and
-    /// switch to the new transport.
-    Upgrade = 5,
-
-    /// A noop packet.
-    ///
-    /// Used for forcing a polling cycle.
-    Noop = 6
-}
-
 impl OpCode {
     /// Tries to parse an OpCode from a scalar value encoded as char.
     pub fn from_char(value: char) -> Result<OpCode, EngineError> {
@@ -284,16 +294,6 @@ impl OpCode {
     pub fn string_repr(&self) -> String {
         (*self as u8).to_string()
     }
-}
-
-/// The message's payload.
-#[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
-pub enum Payload {
-    /// The message contains binary data.
-    Binary(Vec<u8>),
-
-    /// The message contains UTF-8 string data.
-    String(String)
 }
 
 impl Payload {

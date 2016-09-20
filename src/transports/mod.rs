@@ -1,19 +1,12 @@
 #![allow(dead_code)]
 
-mod polling;
-//mod websocket;
-
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::time::Duration;
 use ::EngineError;
-use eventual::Future;
 use packet::Packet;
 use rand::{Rng, weak_rng, XorShiftRng};
 use url::Url;
-
-pub use self::polling::Polling;
-//pub use self::websocket::*;
 
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
@@ -67,13 +60,13 @@ impl Config {
     }
 }
 
-fn append_eio_parameters(url: &mut Url, sid: Option<&str>) {
+fn append_eio_parameters(url: &mut Url, session_id: Option<&str>) {
     let mut query = url.query_pairs_mut();
     query.append_pair("EIO", "3")
          .append_pair("transport", "polling")
          .append_pair("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
          .append_pair("b64", "1");
-    if let Some(id) = sid {
+    if let Some(id) = session_id {
         query.append_pair("sid", id);
     }
 }

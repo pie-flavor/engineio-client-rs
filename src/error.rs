@@ -2,7 +2,6 @@ use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::Error as IoError;
 use std::str::Utf8Error;
-use ::Void;
 use hyper::Error as HttpError;
 use rustc_serialize::base64::FromBase64Error;
 use rustc_serialize::json::DecoderError;
@@ -41,7 +40,7 @@ pub enum EngineError {
     WebSocket(WsError),
 
     #[doc(hidden)]
-    __Nonexhaustive(Void)
+    __Nonexhaustive(!)
 }
 
 impl EngineError {
