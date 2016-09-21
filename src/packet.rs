@@ -7,7 +7,7 @@
 use std::fmt::{Display, format, Formatter, Result as FmtResult};
 use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::str::{FromStr, from_utf8};
-use ::EngineError;
+use error::EngineError;
 use rustc_serialize::Decodable;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
 use rustc_serialize::json;

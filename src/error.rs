@@ -2,7 +2,6 @@ use std::error::Error;
 use std::fmt::{Display, Formatter, Result as FmtResult};
 use std::io::Error as IoError;
 use std::str::Utf8Error;
-use hyper::Error as HttpError;
 use rustc_serialize::base64::FromBase64Error;
 use rustc_serialize::json::DecoderError;
 use ws::{Error as WsError, ErrorKind as WsErrorKind};
@@ -15,11 +14,6 @@ pub enum EngineError {
 
     /// An error occured while decoding JSON data.
     Decode(DecoderError),
-
-    /// An HTTP error occured.
-    ///
-    /// For example, the server sent an invalid status code.
-    Http(HttpError),
 
     /// The action could not be performed because the component was in
     /// an invalid state.
@@ -64,7 +58,6 @@ impl EngineError {
     pub fn io(&self) -> Option<&IoError> {
         match *self {
             EngineError::Io(ref err) => Some(err),
-            EngineError::Http(HttpError::Io(ref err)) => Some(err),
             EngineError::WebSocket(ref err) => {
                 if let WsErrorKind::Io(ref err) = err.kind {
                     Some(err)
@@ -88,7 +81,6 @@ impl Error for EngineError {
         match *self {
             EngineError::Base64(ref err) => err.description(),
             EngineError::Decode(ref err) => err.description(),
-            EngineError::Http(ref err) => err.description(),
             EngineError::InvalidState(ref err) => err.description(),
             EngineError::Io(ref err) => err.description(),
             EngineError::Utf8 => "UTF-8 data was invalid.",
@@ -101,7 +93,6 @@ impl Error for EngineError {
         match *self {
             EngineError::Base64(ref err) => Some(err),
             EngineError::Decode(ref err) => Some(err),
-            EngineError::Http(ref err) => Some(err),
             EngineError::InvalidState(ref err) => err.cause(),
             EngineError::Io(ref err) => Some(err),
             EngineError::Utf8 => None,
@@ -120,12 +111,6 @@ impl From<DecoderError> for EngineError {
 impl From<FromBase64Error> for EngineError {
     fn from(err: FromBase64Error) -> EngineError {
         EngineError::Base64(err)
-    }
-}
-
-impl From<HttpError> for EngineError {
-    fn from(err: HttpError) -> EngineError {
-        EngineError::Http(err)
     }
 }
 

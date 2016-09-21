@@ -3,7 +3,6 @@
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::time::Duration;
-use ::EngineError;
 use packet::Packet;
 use rand::{Rng, weak_rng, XorShiftRng};
 use url::Url;
@@ -20,17 +19,17 @@ thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 /// communicate over the socket.
 pub trait Transport : Debug {
     /// Asynchronously closes the transport.
-    fn close(&self) -> Future<(), EngineError>;
+    fn close(&self) -> ();
 
     /// Pauses the transport so that the buffers are flushed and
     /// no more messages are sent.
-    fn pause(&self) -> Future<(), EngineError>;
+    fn pause(&self) -> ();
 
     /// Sends a list of messages through the transport.
-    fn send(&self, Vec<Packet>) -> Future<(), EngineError>;
+    fn send(&self, Vec<Packet>) -> ();
 
     /// Restarts the transport when it has been paused.
-    fn start(&self) -> Future<(), EngineError>;
+    fn start(&self) -> ();
 }
 
 #[allow(non_snake_case)]
