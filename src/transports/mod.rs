@@ -1,11 +1,13 @@
-#![allow(dead_code)]
-
 use std::cell::RefCell;
 use std::fmt::Debug;
 use std::time::Duration;
+
 use packet::Packet;
 use rand::{Rng, weak_rng, XorShiftRng};
+use tokio_request::Request;
 use url::Url;
+
+mod polling;
 
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
@@ -59,13 +61,21 @@ impl Config {
     }
 }
 
-fn append_eio_parameters(url: &mut Url, session_id: Option<&str>) {
-    let mut query = url.query_pairs_mut();
-    query.append_pair("EIO", "3")
-         .append_pair("transport", "polling")
-         .append_pair("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
-         .append_pair("b64", "1");
+fn prepare_request(mut request: Request, config: &::Config, session_id: Option<&str>) -> Request {
+    request = request.param("EIO", "3")
+                     .param("transport", "polling")
+                     .param("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
+                     .param("b64", "1");
     if let Some(id) = session_id {
-        query.append_pair("sid", id);
+        request = request.param("sid", id);
     }
+    if let Some(ref headers) = config.extra_headers {
+        for (key, value) in headers.iter() {
+            request = request.header(key, value);
+        }
+    }
+    if let Some(ref ua) = config.user_agent {
+        request = request.header("User-Agent", ua);
+    }
+    request
 }

@@ -128,7 +128,7 @@ impl Packet {
 
     /// Parses a list of packets in payload encoding from a `reader`.
     pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Result<Vec<Self>, EngineError> {
-        let mut results = Vec::new();
+        let mut results = Vec::with_capacity(1);
         loop {
             match Packet::from_reader_payload(reader) {
                 Ok(packet) => results.push(packet),

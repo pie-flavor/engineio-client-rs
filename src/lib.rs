@@ -8,7 +8,7 @@
 
 #![crate_name = "engineio"]
 #![crate_type = "lib"]
-#![feature(const_fn, io, never_type)]
+#![feature(conservative_impl_trait, const_fn, io, never_type)]
 #![cfg_attr(release, deny(warnings))]
 
 extern crate futures;
@@ -26,25 +26,34 @@ mod error;
 mod packet;
 mod transports;
 
+pub use connection::Connection;
 pub use error::EngineError;
 pub use packet::{OpCode, Packet, Payload};
 
 use std::collections::HashMap;
-use futures::BoxFuture;
-use futures::stream::{channel, Receiver, Sender};
+
+use futures::{BoxFuture, Future};
 use tokio_core::reactor::Handle;
 use url::Url;
 
 /// Creates an engine.io connection to the given endpoint.
-pub fn connect(url: &Url, h: Handle) -> BoxFuture<Receiver<Packet, EngineError>, EngineError> {
+pub fn connect(url: &Url, h: &Handle) -> BoxFuture<Connection, EngineError> {
     ConnectionBuilder::new()
         .url(url)
         .build(h)
 }
 
 /// Creates an engine.io connection to the given endpoint.
-pub fn connect_str(url: &str, h: Handle) -> BoxFuture<Receiver<Packet, EngineError>, EngineError> {
+pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<Connection, EngineError> {
     connect(&Url::parse(url).unwrap(), h)
+}
+
+/// Contains the configuration for creating a new [`Connection`](struct.Connection.html).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Config {
+    pub extra_headers: Option<HashMap<String, String>>,
+    pub url: Url,
+    pub user_agent: Option<String>
 }
 
 /// The struct that creates an engine.io connection.
@@ -77,14 +86,29 @@ impl ConnectionBuilder {
     }
 
     /// Asynchronously builds a new engine.io connection to the given endpoint.
-    pub fn build(&self, h: Handle) -> BoxFuture<Receiver<Packet, EngineError>, EngineError> {
-        if let Some(ref url) = self.url {
-
+    pub fn build(mut self, h: &Handle) -> BoxFuture<Connection, EngineError> {
+        if let Some(ref mut url) = self.url {
+            let c = Config {
+                extra_headers: self.extra_headers,
+                url: match self.path {
+                    Path::AlreadyAppended => url,
+                    Path::Append(path) => {
+                        url.path_segments_mut().unwrap().push(&path);
+                        url
+                    },
+                    Path::AppendIfEmpty => {
+                        if url.path_segments().unwrap().filter(|seg| !seg.is_empty()).count() == 0 {
+                            url.path_segments_mut().unwrap().push("engine.io");
+                        }
+                        url
+                    }
+                }.clone(),
+                user_agent: self.user_agent
+            };
+            Connection::new(c, h)
         } else {
             panic!("Missing url.");
         }
-
-        unimplemented!();
     }
 
     /// Instructs the builder to take the given url as is and to not append an
@@ -127,6 +151,10 @@ impl ConnectionBuilder {
 
     /// Sets the URL.
     pub fn url(mut self, url: &Url) -> Self {
+        if url.cannot_be_a_base() {
+            panic!("Cannot use given URL since it cannot be a base. See https://docs.rs/url/1.2.0/url/struct.Url.html#method.cannot_be_a_base for more information.");
+        }
+
         self.url = Some(url.clone());
         self
     }
