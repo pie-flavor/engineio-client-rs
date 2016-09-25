@@ -7,6 +7,7 @@
 use std::fmt::{Display, format, Formatter, Result as FmtResult};
 use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
 use std::str::{FromStr, from_utf8};
+
 use error::EngineError;
 use rustc_serialize::Decodable;
 use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
@@ -35,6 +36,7 @@ macro_rules! write_packet {
 }
 
 /// An engine.io message.
+#[cfg_attr(feature = "serde-serialization", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub struct Packet {
     opcode: OpCode,
@@ -42,6 +44,7 @@ pub struct Packet {
 }
 
 /// A packet opcode.
+#[cfg_attr(feature = "serde-serialization", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 #[repr(u8)]
 pub enum OpCode {
@@ -77,6 +80,7 @@ pub enum OpCode {
 }
 
 /// The message's payload.
+#[cfg_attr(feature = "serde-serialization", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub enum Payload {
     /// The message contains binary data.

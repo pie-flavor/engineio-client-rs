@@ -5,7 +5,6 @@ use std::time::Duration;
 use packet::Packet;
 use rand::{Rng, weak_rng, XorShiftRng};
 use tokio_request::Request;
-use url::Url;
 
 mod polling;
 
@@ -61,20 +60,20 @@ impl Config {
     }
 }
 
-fn prepare_request(mut request: Request, config: &::Config, session_id: Option<&str>) -> Request {
+fn prepare_request(mut request: Request, conn_cfg: &::Config, tp_cfg: Option<&Config>) -> Request {
     request = request.param("EIO", "3")
                      .param("transport", "polling")
                      .param("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
                      .param("b64", "1");
-    if let Some(id) = session_id {
-        request = request.param("sid", id);
+    if let Some(cfg) = tp_cfg {
+        request = request.param("sid", &cfg.sid);
     }
-    if let Some(ref headers) = config.extra_headers {
+    if let Some(ref headers) = conn_cfg.extra_headers {
         for (key, value) in headers.iter() {
             request = request.header(key, value);
         }
     }
-    if let Some(ref ua) = config.user_agent {
+    if let Some(ref ua) = conn_cfg.user_agent {
         request = request.header("User-Agent", ua);
     }
     request

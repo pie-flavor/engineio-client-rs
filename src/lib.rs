@@ -10,6 +10,8 @@
 #![crate_type = "lib"]
 #![feature(conservative_impl_trait, const_fn, io, never_type)]
 #![cfg_attr(release, deny(warnings))]
+#![cfg_attr(feature = "serde", feature(plugin, custom_derive))]
+#![cfg_attr(feature = "serde", plugin(serde_macros))]
 
 extern crate futures;
 #[macro_use]
@@ -20,6 +22,11 @@ extern crate tokio_core;
 extern crate tokio_request;
 extern crate url;
 extern crate ws;
+
+#[cfg(feature = "serde-serialization")]
+extern crate serde;
+#[cfg(feature = "serde-serialization")]
+extern crate serde_json;
 
 mod connection;
 mod error;
@@ -32,13 +39,13 @@ pub use packet::{OpCode, Packet, Payload};
 
 use std::collections::HashMap;
 
-use futures::{BoxFuture, Future};
+use futures::BoxFuture;
 use tokio_core::reactor::Handle;
 use url::Url;
 
 /// Creates an engine.io connection to the given endpoint.
 pub fn connect(url: &Url, h: &Handle) -> BoxFuture<Connection, EngineError> {
-    ConnectionBuilder::new()
+    Builder::new()
         .url(url)
         .build(h)
 }
@@ -58,7 +65,7 @@ pub struct Config {
 
 /// The struct that creates an engine.io connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct ConnectionBuilder {
+pub struct Builder {
     extra_headers: Option<HashMap<String, String>>,
     path: Path,
     url: Option<Url>,
@@ -74,10 +81,10 @@ enum Path {
     AppendIfEmpty
 }
 
-impl ConnectionBuilder {
-    /// Creates a new [`ConnectionBuilder`](struct.ConnectionBuilder.html).
+impl Builder {
+    /// Creates a new [`Builder`](struct.Builder.html).
     pub const fn new() -> Self {
-        ConnectionBuilder {
+        Builder {
             extra_headers: None,
             path: Path::AppendIfEmpty,
             url: None,
@@ -140,8 +147,8 @@ impl ConnectionBuilder {
 
     /// Sets the path of the engine.io endpoint.
     ///
-    /// If this or [`do_not_append`](struct.ConnectionBuilder.html#method.do_not_append) is not set,
-    /// the [`ConnectionBuilder`](struct.ConnectionBuilder.html) will check for an existing path on
+    /// If this or [`do_not_append`](struct.Builder.html#method.do_not_append) is not set,
+    /// the [`Builder`](struct.Builder.html) will check for an existing path on
     /// the url. If one exists, it is not modified. Otherwise /engine.io/ will be appended to the path
     /// since that is where engine.io usually lives.
     pub fn path(mut self, path: &str) -> Self {

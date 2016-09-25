@@ -1,8 +1,7 @@
 use {Config, EngineError, Packet};
-use futures::{BoxFuture, Future, Poll};
+use futures::{BoxFuture, Poll};
 use futures::stream::{channel, Receiver, Sender, Stream};
 use tokio_core::reactor::Handle;
-use transports::Transport;
 
 /// Represents an engine.io connection to a server.
 pub struct Connection {
