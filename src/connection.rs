@@ -1,27 +1,15 @@
 use {Config, EngineError, Packet};
 use futures::{BoxFuture, Poll};
-use futures::stream::{channel, Receiver, Sender, Stream};
+use futures::stream::{self, Stream};
 use tokio_core::reactor::Handle;
 
-/// Represents an engine.io connection to a server.
-pub struct Connection {
-    receiver: Receiver<Packet, EngineError>
-}
+/// The receiving half of an engine.io connection.
+pub struct Receiver;
 
-impl Connection {
-    /// Asynchronously creates a new connection from the given configuration.
-    pub fn new(config: Config, handle: &Handle) -> BoxFuture<Connection, EngineError> {
-        let (tx, rx) = channel::<Packet, EngineError>();
-        let handle = handle.clone();
-        unimplemented!();
-    }
-}
+/// The sending half of an engine.io connection.
+pub struct Sender;
 
-impl Stream for Connection {
-    type Item = Packet;
-    type Error = EngineError;
-
-    fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
-        self.receiver.poll()
-    }
+/// Creates a new engine.io connection using the given configuration.
+pub fn connect(config: Config, handle: Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+    unimplemented!();
 }

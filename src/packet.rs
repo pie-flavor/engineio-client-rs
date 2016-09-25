@@ -36,7 +36,8 @@ macro_rules! write_packet {
 }
 
 /// An engine.io message.
-#[cfg_attr(feature = "serde-serialization", derive(Serialize, Deserialize))]
+///
+/// Currently only supports the base64-encoding.
 #[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub struct Packet {
     opcode: OpCode,
@@ -44,7 +45,6 @@ pub struct Packet {
 }
 
 /// A packet opcode.
-#[cfg_attr(feature = "serde-serialization", derive(Serialize, Deserialize))]
 #[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 #[repr(u8)]
 pub enum OpCode {
@@ -80,7 +80,6 @@ pub enum OpCode {
 }
 
 /// The message's payload.
-#[cfg_attr(feature = "serde-serialization", derive(Serialize, Deserialize))]
 #[derive(Clone, Debug, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub enum Payload {
     /// The message contains binary data.

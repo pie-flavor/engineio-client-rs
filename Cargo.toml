@@ -10,17 +10,11 @@ license = "MITNFA"
 
 [dependencies]
 futures = "0.1"
-lazy_static = "0.2"
 rand = "0.3"
 rustc-serialize = "0.3"
-serde = { version = "0.8", optional = true }
-serde_json = { version = "0.8", optional = true }
-serde_macros = { version = "0.8", optional = true }
 tokio-core = "0.1"
 tokio-request = { git = "https://github.com/NeoLegends/tokio-request" }
 url = "1.1"
 ws = "0.5"
 
 [features]
-default = ["serde-serialization"]
-serde-serialization = ["serde", "serde_json", "serde_macros"]

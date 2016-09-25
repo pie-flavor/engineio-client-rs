@@ -1,38 +1,24 @@
+//! The various transports used to connect to an engine.io server.
+//!
+//! You generally don't want to use this directly, you'll probably
+//! want to use higher level abstractions that merge the transports
+//! under one API and support upgrading from one to another.
+//!
+//! See the modules for further documentation.
+
 use std::cell::RefCell;
-use std::fmt::Debug;
 use std::time::Duration;
 
-use packet::Packet;
 use rand::{Rng, weak_rng, XorShiftRng};
 use tokio_request::Request;
 
-mod polling;
+pub mod polling;
+pub mod websocket;
 
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
-/// Represents an engine.io transport.
-///
-/// A transport is a way of connecting an engine.io server to
-/// a client. At the moment, this library supports HTTP long
-/// polling (which is used to initialize a connection) and
-/// web sockets. Since using web sockets is not always possible,
-/// the upgrade to will only be done if both parties can really
-/// communicate over the socket.
-pub trait Transport : Debug {
-    /// Asynchronously closes the transport.
-    fn close(&self) -> ();
-
-    /// Pauses the transport so that the buffers are flushed and
-    /// no more messages are sent.
-    fn pause(&self) -> ();
-
-    /// Sends a list of messages through the transport.
-    fn send(&self, Vec<Packet>) -> ();
-
-    /// Restarts the transport when it has been paused.
-    fn start(&self) -> ();
-}
-
+/// Represents the transport configuration that is received
+/// during the handshake.
 #[allow(non_snake_case)]
 #[derive(Clone, Debug, Default, Eq, PartialEq, RustcEncodable, RustcDecodable)]
 pub struct Config {
@@ -43,18 +29,22 @@ pub struct Config {
 }
 
 impl Config {
+    /// Gets the interval that states how often the server shall be pinged.
     pub fn ping_interval(&self) -> Duration {
         Duration::from_millis(self.pingInterval as u64)
     }
 
+    /// The ping timeout.
     pub fn ping_timeout(&self) -> Duration {
         Duration::from_millis(self.pingTimeout as u64)
     }
 
+    /// The current engine.io session ID.
     pub fn sid(&self) -> &str {
         &self.sid
     }
 
+    /// Available upgrades.
     pub fn upgrades(&self) -> &[String] {
         &self.upgrades
     }
@@ -72,9 +62,6 @@ fn prepare_request(mut request: Request, conn_cfg: &::Config, tp_cfg: Option<&Co
         for (key, value) in headers.iter() {
             request = request.header(key, value);
         }
-    }
-    if let Some(ref ua) = conn_cfg.user_agent {
-        request = request.header("User-Agent", ua);
     }
     request
 }

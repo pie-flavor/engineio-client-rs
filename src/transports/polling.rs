@@ -1,3 +1,9 @@
+//! The HTTP long polling transport.
+//!
+//! HTTP long polling is comparatively slow but very reliable.
+//! Engine.io always sets up a connection using long polling and
+//! upgrates to web sockets, if possible.
+
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::io::{Cursor, Error as IoError, ErrorKind};
 use std::sync::Arc;
@@ -21,27 +27,39 @@ pub struct Receiver(Arc<Inner>, StreamReceiver<Packet, EngineError>);
 #[derive(Debug)]
 pub struct Sender(Arc<Inner>, bool);
 
-/// Asynchronously creates a new polling connection to the given endpoint.
-pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=EngineError>> {
-    let f = handshake(&config, &handle)
-        .and_then(move |tc| connect_with_config(config, tc, handle));
-    Box::new(f)
-}
-
-/// Asynchronously creates a polling connection to the given endpoint using
-/// the given transport configuration.
-///
-/// This is used to recreate / reconnect broken transports.
-pub fn connect_with_config(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
-    unimplemented!();
-}
-
-/// Inner state of both `Sender` and `Receiver`.
+/// Common inner state of both `Sender` and `Receiver`.
 #[derive(Clone)]
 struct Inner {
     conn_cfg: ConnectionConfig,
     handle: Handle,
     tp_cfg: TransportConfig
+}
+
+/// Asynchronously creates a new long polling connection to the given endpoint.
+pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=EngineError>> {
+    let f = handshake(&config, &handle)
+        .map(move |tc| connect_with_config(config, tc, handle));
+    Box::new(f) // .boxed() requires Send, which we don't have
+}
+
+/// Asynchronously creates a polling connection to the given endpoint using
+/// the given transport configuration.
+pub fn connect_with_config(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle) -> (Sender, Receiver) {
+    let (tx, rx) = stream::channel();
+    start_polling(conn_cfg.clone(), tp_cfg.clone(), handle.clone(), tx);
+    let data = Arc::new(Inner {
+        conn_cfg: conn_cfg,
+        handle: handle,
+        tp_cfg: tp_cfg
+    });
+    (Sender(data.clone(), false), Receiver(data, rx))
+}
+
+impl Receiver {
+    /// Gets the underlying transport configuration.
+    pub fn transport_config(&self) -> &TransportConfig {
+        &self.0.tp_cfg
+    }
 }
 
 impl Debug for Receiver {
@@ -79,6 +97,11 @@ impl Sender {
         } else {
             futures::failed(EngineError::invalid_state("Transport is paused. Unpause it before sending packets again.")).boxed()
         }
+    }
+
+    /// Gets the underlying transport configuration.
+    pub fn transport_config(&self) -> &TransportConfig {
+        &self.0.tp_cfg
     }
 
     /// Unpauses the transport.
@@ -138,4 +161,8 @@ fn send(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig, handle: &Handle, 
             }
         })
         .boxed()
+}
+
+fn start_polling(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle, sender: stream::Sender<Packet, EngineError>) {
+    unimplemented!();
 }

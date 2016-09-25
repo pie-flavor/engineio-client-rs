@@ -1,21 +1,12 @@
 //! An engine.io client library written in and for Rust.
-//!
-//! The first goal of this library is to reach feature-complete
-//! status and full interoperability with the JS implementation.
-//! Performance is always being worked on, though not focused on
-//! primarily. Major improvements in that area can come once the
-//! library is working properly and stable.
 
-#![crate_name = "engineio"]
-#![crate_type = "lib"]
-#![feature(conservative_impl_trait, const_fn, io, never_type)]
+#![allow(dead_code)]
+#![warn(missing_docs)]
+#![feature(const_fn, io, never_type)]
+
 #![cfg_attr(release, deny(warnings))]
-#![cfg_attr(feature = "serde", feature(plugin, custom_derive))]
-#![cfg_attr(feature = "serde", plugin(serde_macros))]
 
 extern crate futures;
-#[macro_use]
-extern crate lazy_static;
 extern crate rand;
 extern crate rustc_serialize;
 extern crate tokio_core;
@@ -23,19 +14,10 @@ extern crate tokio_request;
 extern crate url;
 extern crate ws;
 
-#[cfg(feature = "serde-serialization")]
-extern crate serde;
-#[cfg(feature = "serde-serialization")]
-extern crate serde_json;
-
 mod connection;
 mod error;
 mod packet;
-mod transports;
-
-pub use connection::Connection;
-pub use error::EngineError;
-pub use packet::{OpCode, Packet, Payload};
+pub mod transports;
 
 use std::collections::HashMap;
 
@@ -43,42 +25,46 @@ use futures::BoxFuture;
 use tokio_core::reactor::Handle;
 use url::Url;
 
-/// Creates an engine.io connection to the given endpoint.
-pub fn connect(url: &Url, h: &Handle) -> BoxFuture<Connection, EngineError> {
-    Builder::new()
-        .url(url)
-        .build(h)
-}
+pub use connection::{Receiver, Sender};
+pub use error::EngineError;
+pub use packet::{OpCode, Packet, Payload};
 
-/// Creates an engine.io connection to the given endpoint.
-pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<Connection, EngineError> {
-    connect(&Url::parse(url).unwrap(), h)
-}
-
-/// Contains the configuration for creating a new [`Connection`](struct.Connection.html).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Config {
-    pub extra_headers: Option<HashMap<String, String>>,
-    pub url: Url,
-    pub user_agent: Option<String>
-}
-
-/// The struct that creates an engine.io connection.
+/// A builder for an engine.io connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Builder {
     extra_headers: Option<HashMap<String, String>>,
     path: Path,
-    url: Option<Url>,
-    user_agent: Option<String>
+    url: Option<Url>
+}
+
+/// Contains the configuration for creating a new connection.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct Config {
+    /// Extra headers to pass during each request.
+    pub extra_headers: Option<HashMap<String, String>>,
+    /// The engine.io endpoint.
+    pub url: Url
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Path {
     Append(String),
 
-    AlreadyAppended,
+    DoNotAppend,
 
     AppendIfEmpty
+}
+
+/// Creates an engine.io connection to the given endpoint.
+pub fn connect(url: &Url, h: &Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+    Builder::new()
+        .url(url)
+        .build(h)
+}
+
+/// Creates an engine.io connection to the given endpoint.
+pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+    connect(&Url::parse(url).unwrap(), h)
 }
 
 impl Builder {
@@ -87,18 +73,20 @@ impl Builder {
         Builder {
             extra_headers: None,
             path: Path::AppendIfEmpty,
-            url: None,
-            user_agent: None
+            url: None
         }
     }
 
     /// Asynchronously builds a new engine.io connection to the given endpoint.
-    pub fn build(mut self, h: &Handle) -> BoxFuture<Connection, EngineError> {
-        if let Some(ref mut url) = self.url {
+    ///
+    /// ## Panics
+    /// Panics if the URL hasn't been set.
+    pub fn build(self, h: &Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+        if let Some(mut url) = self.url {
             let c = Config {
                 extra_headers: self.extra_headers,
                 url: match self.path {
-                    Path::AlreadyAppended => url,
+                    Path::DoNotAppend => url,
                     Path::Append(path) => {
                         url.path_segments_mut().unwrap().push(&path);
                         url
@@ -109,10 +97,9 @@ impl Builder {
                         }
                         url
                     }
-                }.clone(),
-                user_agent: self.user_agent
+                }
             };
-            Connection::new(c, h)
+            connection::connect(c, h.clone())
         } else {
             panic!("Missing url.");
         }
@@ -121,7 +108,7 @@ impl Builder {
     /// Instructs the builder to take the given url as is and to not append an
     /// additional path at the end.
     pub fn do_not_append(mut self) -> Self {
-        self.path = Path::AlreadyAppended;
+        self.path = Path::DoNotAppend;
         self
     }
 
@@ -148,9 +135,11 @@ impl Builder {
     /// Sets the path of the engine.io endpoint.
     ///
     /// If this or [`do_not_append`](struct.Builder.html#method.do_not_append) is not set,
-    /// the [`Builder`](struct.Builder.html) will check for an existing path on
-    /// the url. If one exists, it is not modified. Otherwise /engine.io/ will be appended to the path
-    /// since that is where engine.io usually lives.
+    /// the [`Builder`](struct.Builder.html) will check for an existing path on the url.
+    /// If one exists, it is not modified. Otherwise `/engine.io/` will be appended to
+    /// the URL since that is where engine.io usually lives / spawns it's server.
+    ///
+    /// In case of socket.io, the path is `/socket.io/`.
     pub fn path(mut self, path: &str) -> Self {
         self.path = Path::Append(path.to_owned());
         self
@@ -172,8 +161,7 @@ impl Builder {
     }
 
     /// Sets the user agent.
-    pub fn user_agent(mut self, ua: &str) -> Self {
-        self.user_agent = Some(ua.to_owned());
-        self
+    pub fn user_agent(self, ua: &str) -> Self {
+        self.extra_header("User-Agent", ua)
     }
 }
