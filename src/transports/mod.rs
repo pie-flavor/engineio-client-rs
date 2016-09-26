@@ -54,14 +54,11 @@ fn prepare_request(mut request: Request, conn_cfg: &::Config, tp_cfg: Option<&Co
     request = request.param("EIO", "3")
                      .param("transport", "polling")
                      .param("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
-                     .param("b64", "1");
+                     .param("b64", "1")
+                     .headers(conn_cfg.extra_headers.clone());
     if let Some(cfg) = tp_cfg {
-        request = request.param("sid", &cfg.sid);
-    }
-    if let Some(ref headers) = conn_cfg.extra_headers {
-        for (key, value) in headers.iter() {
-            request = request.header(key, value);
-        }
+        request = request.param("sid", &cfg.sid)
+                         .timeout(cfg.ping_timeout());
     }
     request
 }

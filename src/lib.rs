@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 #![warn(missing_docs)]
-#![feature(const_fn, io, never_type)]
+#![feature(io, never_type)]
 
 #![cfg_attr(release, deny(warnings))]
 
@@ -19,8 +19,6 @@ mod error;
 mod packet;
 pub mod transports;
 
-use std::collections::HashMap;
-
 use futures::BoxFuture;
 use tokio_core::reactor::Handle;
 use url::Url;
@@ -32,7 +30,7 @@ pub use packet::{OpCode, Packet, Payload};
 /// A builder for an engine.io connection.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Builder {
-    extra_headers: Option<HashMap<String, String>>,
+    extra_headers: Vec<(String, String)>,
     path: Path,
     url: Option<Url>
 }
@@ -41,7 +39,7 @@ pub struct Builder {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Config {
     /// Extra headers to pass during each request.
-    pub extra_headers: Option<HashMap<String, String>>,
+    pub extra_headers: Vec<(String, String)>,
     /// The engine.io endpoint.
     pub url: Url
 }
@@ -69,9 +67,9 @@ pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<(Sender, Receiver), Engin
 
 impl Builder {
     /// Creates a new [`Builder`](struct.Builder.html).
-    pub const fn new() -> Self {
+    pub fn new() -> Self {
         Builder {
-            extra_headers: None,
+            extra_headers: Vec::new(),
             path: Path::AppendIfEmpty,
             url: None
         }
@@ -114,21 +112,15 @@ impl Builder {
 
     /// Sets a single extra header to be sent during each request to the server.
     pub fn extra_header(mut self, name: &str, value: &str) -> Self {
-        if let Some(ref mut map) = self.extra_headers {
-            map.insert(name.to_owned(), value.to_owned());
-        } else {
-            let mut map = HashMap::with_capacity(1);
-            map.insert(name.to_owned(), value.to_owned());
-            self.extra_headers = Some(map);
-        }
+        self.extra_headers.push((name.to_owned(), value.to_owned()));
         self
     }
 
     /// Sets the given headers to be sent during each request to the server.
     ///
     /// This overwrites all previously set headers.
-    pub fn extra_headers(mut self, headers: HashMap<String, String>) -> Self {
-        self.extra_headers = Some(headers);
+    pub fn extra_headers(mut self, headers: Vec<(String, String)>) -> Self {
+        self.extra_headers = headers;
         self
     }
 

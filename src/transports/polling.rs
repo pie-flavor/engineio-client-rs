@@ -19,6 +19,7 @@ use transports::{Config as TransportConfig, prepare_request};
 const HANDSHAKE_BINARY_RECEIVED: &'static str = "Received binary packet when string packet was expected in session initialization.";
 const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one packet as part of the handshake.";
 const ONESHOT_COMPLETE_DROPPED: &'static str = "Complete was dropped before it was completed. This is a bug. Please contact the library authors of engineio-rs.";
+const TRANSPORT_PAUSED: &'static str = "Transport is paused. Unpause it before sending packets again.";
 
 /// Represents the receiving half of an HTTP long polling connection.
 pub struct Receiver(Arc<Inner>, StreamReceiver<Packet, EngineError>);
@@ -95,7 +96,7 @@ impl Sender {
         if !self.1 {
             send(&self.0.conn_cfg, &self.0.tp_cfg, &self.0.handle, packets)
         } else {
-            futures::failed(EngineError::invalid_state("Transport is paused. Unpause it before sending packets again.")).boxed()
+            futures::failed(EngineError::invalid_state(TRANSPORT_PAUSED)).boxed()
         }
     }
 
@@ -122,17 +123,19 @@ impl Debug for Inner {
 fn handshake(config: &ConnectionConfig, handle: &Handle) -> BoxFuture<TransportConfig, EngineError> {
     poll(config, None, handle).and_then(|packets| {
         if packets.len() == 0 {
-            return Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING)));
+            return Err(IoError::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING).into());
         }
 
         match *packets[0].payload() {
             Payload::String(ref str) => decode(str).map_err(|err| err.into()),
-            Payload::Binary(_) => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED)))
+            Payload::Binary(_) => Err(IoError::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED).into())
         }
     }).boxed()
 }
 
-fn poll(conn_cfg: &ConnectionConfig, tp_cfg: Option<&TransportConfig>, handle: &Handle) -> BoxFuture<Vec<Packet>, EngineError> {
+fn poll(conn_cfg: &ConnectionConfig, tp_cfg: Option<&TransportConfig>,
+        handle: &Handle)
+        -> BoxFuture<Vec<Packet>, EngineError> {
     prepare_request(http::get(&conn_cfg.url), conn_cfg, tp_cfg)
         .send(handle.clone())
         .map_err(|err| err.into())
@@ -140,7 +143,10 @@ fn poll(conn_cfg: &ConnectionConfig, tp_cfg: Option<&TransportConfig>, handle: &
         .boxed()
 }
 
-fn send(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig, handle: &Handle, packets: Vec<Packet>) -> BoxFuture<(), EngineError> {
+fn send(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig,
+        handle: &Handle,
+        packets: Vec<Packet>)
+        -> BoxFuture<(), EngineError> {
     let capacity = packets.iter().fold(0usize, |val, p| val + p.try_compute_length(false).unwrap_or(0usize));
     let mut buf = Cursor::new(vec![0; capacity]);
     for packet in packets {
@@ -163,6 +169,15 @@ fn send(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig, handle: &Handle, 
         .boxed()
 }
 
-fn start_polling(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle, sender: stream::Sender<Packet, EngineError>) {
-    unimplemented!();
+fn start_polling(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle, sender: stream::Sender<Packet, EngineError>) -> BoxFuture<(), ()> {
+    poll(&conn_cfg, Some(&tp_cfg), &handle).then(|res| {
+        match res {
+            Ok(packets) => {
+
+            },
+            Err(err) => {
+
+            }
+        }
+    });
 }
