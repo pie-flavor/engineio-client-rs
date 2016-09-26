@@ -1,4 +1,6 @@
-use {Config, EngineError, Packet};
+use std::io::Error;
+
+use {Config, Packet};
 use futures::{BoxFuture, Poll};
 use futures::stream::{self, Stream};
 use tokio_core::reactor::Handle;
@@ -10,6 +12,6 @@ pub struct Receiver;
 pub struct Sender;
 
 /// Creates a new engine.io connection using the given configuration.
-pub fn connect(config: Config, handle: Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+pub fn connect(config: Config, handle: Handle) -> BoxFuture<(Sender, Receiver), Error> {
     unimplemented!();
 }

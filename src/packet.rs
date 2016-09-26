@@ -5,17 +5,20 @@
 //! the creators of engine.io.
 
 use std::fmt::{Display, format, Formatter, Result as FmtResult};
-use std::io::{BufRead, CharsError, Error as IoError, ErrorKind, Read, Result as IoResult, Write};
+use std::io::{BufRead, CharsError, Error, ErrorKind, Read, Result as IoResult, Write};
 use std::str::{FromStr, from_utf8};
 
-use error::EngineError;
 use rustc_serialize::Decodable;
-use rustc_serialize::base64::{FromBase64, STANDARD, ToBase64};
+use rustc_serialize::base64::{self, FromBase64, ToBase64};
 use rustc_serialize::json;
 use ws;
 
 const BUFFER_UNEXPECTED_EOF: &'static str = "Packet opcode or binary indicator could not be read because the end of the buffer string was reached.";
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
+const INVALID_UTF8: &'static str = "Input wasn't valid UTF-8.";
+const OPCODE_CHAR_NO_INTEGER: &'static str = "Could not parse opcode value to a valid integer.";
+const OPCODE_INVALID_DATA: &'static str = "Invalid opcode value. Valid values are in the range of [0, 6].";
+const OPCODE_UNEXPECTED_EOF: &'static str = "String slice to convert to opcode is empty.";
 const READER_UNEXPECTED_EOF: &'static str = "Reader reached its end before the packet length could be read.";
 
 /// A macro to efficiently write a packet into a stream.
@@ -29,7 +32,7 @@ macro_rules! write_packet {
     ($s:ident, $e:expr) => {{
         let opcode_str = $s.opcode.string_repr();
         match $s.payload {
-            Payload::Binary(ref data) => write!($e, "b{}{}", opcode_str, data.to_base64(STANDARD)),
+            Payload::Binary(ref data) => write!($e, "b{}{}", opcode_str, data.to_base64(base64::STANDARD)),
             Payload::String(ref string) => write!($e, "{}{}", opcode_str, string)
         }
     }}
@@ -122,7 +125,7 @@ impl Packet {
 
     /// Tries to parse a packet from a `reader`. The reader will be
     /// read to its end.
-    pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self, EngineError> {
+    pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let mut buf = String::new();
         try!(reader.read_to_string(&mut buf));
 
@@ -130,7 +133,7 @@ impl Packet {
     }
 
     /// Parses a list of packets in payload encoding from a `reader`.
-    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Result<Vec<Self>, EngineError> {
+    pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Result<Vec<Self>, Error> {
         let mut results = Vec::with_capacity(1);
         loop {
             match Packet::from_reader_payload(reader) {
@@ -148,25 +151,52 @@ impl Packet {
 
     /// Tries to parse a packet in payload encoding from a `reader`.
     /// Only the data needed is read from the data source.
-    pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Self, EngineError> {
+    pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Self, Error> {
         let data_length = {
             let mut buf = Vec::with_capacity(8);
             if try!(reader.read_until(b':', &mut buf)) == 0 {
-                return Err(IoError::new(ErrorKind::UnexpectedEof, READER_UNEXPECTED_EOF).into());
+                return Err(Error::new(ErrorKind::UnexpectedEof, READER_UNEXPECTED_EOF));
             }
-            let data_length_str = try!(from_utf8(&buf[..buf.len() - 1]));
-            try!(data_length_str.parse::<usize>().map_err(|_| EngineError::Io(IoError::new(ErrorKind::InvalidData, DATA_LENGTH_INVALID))))
+            let data_length_str = try!(
+                from_utf8(&buf[..buf.len() - 1])
+                    .map_err(|err| Error::new(ErrorKind::InvalidData, err))
+            );
+            try!(
+                data_length_str
+                    .parse::<usize>()
+                    .map_err(|_| Error::new(ErrorKind::InvalidData, DATA_LENGTH_INVALID))
+            )
         };
 
         let mut string = String::with_capacity(data_length);
         for ch in reader.chars().take(data_length) {
             match ch {
                 Ok(ch) => string.push(ch),
-                Err(CharsError::NotUtf8) => return Err(EngineError::Utf8),
-                Err(CharsError::Other(io_err)) => return Err(EngineError::Io(io_err))
+                Err(err @ CharsError::NotUtf8) => return Err(Error::new(ErrorKind::InvalidData, err)),
+                Err(CharsError::Other(io_err)) => return Err(io_err)
             }
         }
         Packet::from_str(&string)
+    }
+
+    /// Computes the length of the packet in bytes or in characters.
+    pub fn compute_length(&self, as_chars: bool) -> usize {
+        match self.payload {
+            Payload::Binary(ref data) => ((((4usize * data.len()) / 3usize) + 3usize) & !3usize) + 2, // Opcode + colon
+            Payload::String(ref string) => {
+                (if as_chars {
+                    string.chars().count()
+                } else {
+                    string.len()
+                }) + 1 // Opcode
+            }
+        }
+    }
+
+    /// Computes the packet's length in payload encoding.
+    pub fn compute_payload_length(&self, as_chars: bool) -> usize {
+        let len = self.compute_length(as_chars);
+        len + (len as f32).log10().ceil() as usize + 1
     }
 
     /// Gets the opcode.
@@ -179,23 +209,6 @@ impl Packet {
         &self.payload
     }
 
-    /// Tries to compute the length of the packet in bytes or
-    /// in characters.
-    ///
-    /// This operation is only possible if we're dealing with
-    /// a string packet.
-    pub fn try_compute_length(&self, as_chars: bool) -> Option<usize> {
-        if let Payload::String(ref string) = self.payload {
-            Some(if as_chars {
-                string.chars().count()
-            } else {
-                string.len()
-            } + 1)
-        } else {
-            None
-        }
-    }
-
     /// Writes the packet into the given `writer`.
     pub fn write_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
         write_packet!(self, writer)
@@ -205,14 +218,9 @@ impl Packet {
     pub fn write_payload_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
         // If we can precompute the length, we write the contents directly
         // into the stream instead of writing the packet to memory first.
-        if let Some(length) = self.try_compute_length(true) {
-            try!(write!(writer, "{}:", length));
-            self.write_to(writer)
-        } else {
-            let data_to_write = self.to_string();
-            let data_length = data_to_write.chars().count();
-            write!(writer, "{}:{}", data_length, data_to_write)
-        }
+        let length = self.compute_length(true);
+        try!(write!(writer, "{}:", length));
+        self.write_to(writer)
     }
 }
 
@@ -229,16 +237,16 @@ impl Display for Packet {
 }
 
 impl FromStr for Packet {
-    type Err = EngineError;
+    type Err = Error;
 
     /// Parses a packet from a string slice.
     fn from_str(buf: &str) -> Result<Self, Self::Err> {
         let mut chars = buf.chars();
         match chars.nth(0) {
             Some('b') => {
-                let opcode_char = try!(chars.nth(0).ok_or(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)));
+                let opcode_char = try!(chars.nth(0).ok_or(Error::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)));
                 let opcode = try!(OpCode::from_char(opcode_char));
-                let b64 = try!(buf[2..].from_base64());
+                let b64 = try!(buf[2..].from_base64().map_err(|err| Error::new(ErrorKind::InvalidData, err)));
                 Ok(Packet::with_binary(opcode, b64))
             },
             Some(ch @ '0'...'6') => {
@@ -247,9 +255,9 @@ impl FromStr for Packet {
             },
             Some(ch) => {
                 let msg = format(format_args!("Invalid opcode character or binary indicator found (First character must be 0-6 or b): '{}'.", ch));
-                Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, msg)))
+                Err(Error::new(ErrorKind::InvalidData, msg))
             },
-            None => Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF)))
+            None => Err(Error::new(ErrorKind::UnexpectedEof, BUFFER_UNEXPECTED_EOF))
         }
     }
 }
@@ -262,25 +270,25 @@ impl From<Packet> for ws::Message {
 
 impl OpCode {
     /// Tries to parse an OpCode from a scalar value encoded as char.
-    pub fn from_char(value: char) -> Result<OpCode, EngineError> {
+    pub fn from_char(value: char) -> Result<OpCode, Error> {
         match value.to_digit(10) {
             Some(val) => OpCode::from_u8(val as u8),
-            None => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, "Opcode character was not a digit.")))
+            None => Err(Error::new(ErrorKind::InvalidData, OPCODE_CHAR_NO_INTEGER))
         }
     }
 
     /// Tries to parse an OpCode from a scalar value encoded as string.
-    pub fn from_str(value: &str) -> Result<OpCode, EngineError> {
+    pub fn from_str(value: &str) -> Result<OpCode, Error> {
         if !value.is_empty() {
-            let res = value.parse::<u8>().map_err(|_| EngineError::Io(IoError::new(ErrorKind::InvalidData, "Could not parse opcode value to integer.")));
+            let res = value.parse::<u8>().map_err(|_| Error::new(ErrorKind::InvalidData, OPCODE_CHAR_NO_INTEGER));
             OpCode::from_u8(try!(res))
         } else {
-            Err(EngineError::Io(IoError::new(ErrorKind::UnexpectedEof, "String slice to convert to opcode is empty.")))
+            Err(Error::new(ErrorKind::UnexpectedEof, OPCODE_UNEXPECTED_EOF))
         }
     }
 
     /// Creates a new OpCode from the given scalar value.
-    pub fn from_u8(value: u8) -> Result<OpCode, EngineError> {
+    pub fn from_u8(value: u8) -> Result<OpCode, Error> {
         match value {
             0 => Ok(OpCode::Open),
             1 => Ok(OpCode::Close),
@@ -289,7 +297,7 @@ impl OpCode {
             4 => Ok(OpCode::Message),
             5 => Ok(OpCode::Upgrade),
             6 => Ok(OpCode::Noop),
-            _ => Err(EngineError::Io(IoError::new(ErrorKind::InvalidData, "Invalid opcode value. Valid values are in the range of [0, 6].")))
+            _ => Err(Error::new(ErrorKind::InvalidData, OPCODE_INVALID_DATA))
         }
     }
 
@@ -304,12 +312,12 @@ impl Payload {
     ///
     /// If a binary payload is given, this method attempts to read the binary
     /// data as a UTF-8 string and decode from that.
-    pub fn from_json_to<T: Decodable>(&self) -> Result<T, EngineError> {
+    pub fn from_json_to<T: Decodable>(&self) -> Result<T, Error> {
         let str = match *self {
-            Payload::Binary(ref data) => try!(from_utf8(data)),
+            Payload::Binary(ref data) => try!(from_utf8(data).map_err(|err| Error::new(ErrorKind::InvalidData, err))),
             Payload::String(ref str) => str
         };
-        json::decode(str).map_err(|err| err.into())
+        json::decode(str).map_err(|err| Error::new(ErrorKind::InvalidData, err))
     }
 }
 
@@ -498,5 +506,37 @@ mod tests {
         let str = from_utf8(&buf).expect("Failed to convert written data into UTF-8.");
 
         assert_eq!(str, format!("12:4{}14:b4{}", STRING_PAYLOAD, BINARY_PAYLOAD_B64))
+    }
+
+    #[test]
+    fn packet_length() {
+        use std::io::Cursor;
+
+        let p1 = Packet::with_str(OpCode::Message, STRING_PAYLOAD);
+        let mut buf = Cursor::new(Vec::new());
+        p1.write_to(&mut buf).expect("Failed to write string packet into buffer.");
+        assert_eq!(p1.compute_length(false), buf.get_ref().len());
+
+        let p2 = Packet::with_binary(OpCode::Message, BINARY_PAYLOAD.to_vec());
+        let mut buf = Cursor::new(Vec::new());
+        p2.write_to(&mut buf).expect("Failed to write string packet into buffer.");
+        assert_eq!(p2.compute_length(false), buf.get_ref().len());
+        assert_eq!(p2.compute_length(true), buf.get_ref().len());
+    }
+
+    #[test]
+    fn packet_length_payload() {
+        use std::io::Cursor;
+
+        let p1 = Packet::with_str(OpCode::Message, STRING_PAYLOAD);
+        let mut buf = Cursor::new(Vec::new());
+        p1.write_payload_to(&mut buf).expect("Failed to write string packet into buffer.");
+        assert_eq!(p1.compute_payload_length(false), buf.into_inner().len());
+
+        let p2 = Packet::with_binary(OpCode::Message, BINARY_PAYLOAD.to_vec());
+        let mut buf = Cursor::new(Vec::new());
+        p2.write_payload_to(&mut buf).expect("Failed to write string packet into buffer.");
+        assert_eq!(p2.compute_payload_length(false), buf.get_ref().len());
+        assert_eq!(p2.compute_payload_length(true), buf.get_ref().len());
     }
 }

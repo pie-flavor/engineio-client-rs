@@ -5,13 +5,13 @@
 //! upgrates to web sockets, if possible.
 
 use std::fmt::{Debug, Formatter, Result as FmtResult};
-use std::io::{Cursor, Error as IoError, ErrorKind};
-use std::sync::Arc;
+use std::io::{Cursor, Error, ErrorKind};
+use std::rc::Rc;
 
-use {Config as ConnectionConfig, EngineError, Packet, Payload};
+use {Config as ConnectionConfig, Packet, Payload};
 use futures::{self, BoxFuture, Future, Poll};
-use futures::stream::{self, Receiver as StreamReceiver, Stream};
-use rustc_serialize::json::decode;
+use futures::stream::{self, Stream};
+use rustc_serialize::json;
 use tokio_core::reactor::Handle;
 use tokio_request as http;
 use transports::{Config as TransportConfig, prepare_request};
@@ -22,11 +22,11 @@ const ONESHOT_COMPLETE_DROPPED: &'static str = "Complete was dropped before it w
 const TRANSPORT_PAUSED: &'static str = "Transport is paused. Unpause it before sending packets again.";
 
 /// Represents the receiving half of an HTTP long polling connection.
-pub struct Receiver(Arc<Inner>, StreamReceiver<Packet, EngineError>);
+pub struct Receiver(Rc<Inner>, stream::Receiver<Packet, Error>);
 
 /// Represents the sending half of an HTTP long polling connection.
 #[derive(Debug)]
-pub struct Sender(Arc<Inner>, bool);
+pub struct Sender(Rc<Inner>, bool);
 
 /// Common inner state of both `Sender` and `Receiver`.
 #[derive(Clone)]
@@ -37,7 +37,7 @@ struct Inner {
 }
 
 /// Asynchronously creates a new long polling connection to the given endpoint.
-pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=EngineError>> {
+pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
     let f = handshake(&config, &handle)
         .map(move |tc| connect_with_config(config, tc, handle));
     Box::new(f) // .boxed() requires Send, which we don't have
@@ -45,10 +45,13 @@ pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sen
 
 /// Asynchronously creates a polling connection to the given endpoint using
 /// the given transport configuration.
-pub fn connect_with_config(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle) -> (Sender, Receiver) {
+pub fn connect_with_config(conn_cfg: ConnectionConfig,
+                           tp_cfg: TransportConfig,
+                           handle: Handle)
+                           -> (Sender, Receiver) {
     let (tx, rx) = stream::channel();
-    start_polling(conn_cfg.clone(), tp_cfg.clone(), handle.clone(), tx);
-    let data = Arc::new(Inner {
+    handle.spawn(start_polling(conn_cfg.clone(), tp_cfg.clone(), handle.clone(), tx));
+    let data = Rc::new(Inner {
         conn_cfg: conn_cfg,
         handle: handle,
         tp_cfg: tp_cfg
@@ -73,7 +76,7 @@ impl Debug for Receiver {
 
 impl Stream for Receiver {
     type Item = Packet;
-    type Error = EngineError;
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         self.1.poll()
@@ -92,11 +95,14 @@ impl Sender {
     }
 
     /// Sends a packet to the server.
-    pub fn send(&self, packets: Vec<Packet>) -> BoxFuture<(), EngineError> {
+    pub fn send(&self, packets: Vec<Packet>) -> BoxFuture<(), Error> {
         if !self.1 {
             send(&self.0.conn_cfg, &self.0.tp_cfg, &self.0.handle, packets)
         } else {
-            futures::failed(EngineError::invalid_state(TRANSPORT_PAUSED)).boxed()
+            futures::failed(Error::new(
+                ErrorKind::InvalidInput,
+                TRANSPORT_PAUSED
+            )).boxed()
         }
     }
 
@@ -120,64 +126,88 @@ impl Debug for Inner {
     }
 }
 
-fn handshake(config: &ConnectionConfig, handle: &Handle) -> BoxFuture<TransportConfig, EngineError> {
+fn handshake(config: &ConnectionConfig, handle: &Handle) -> BoxFuture<TransportConfig, Error> {
     poll(config, None, handle).and_then(|packets| {
         if packets.len() == 0 {
-            return Err(IoError::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING).into());
+            return Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING));
         }
 
         match *packets[0].payload() {
-            Payload::String(ref str) => decode(str).map_err(|err| err.into()),
-            Payload::Binary(_) => Err(IoError::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED).into())
+            Payload::String(ref str) => json::decode(str).map_err(|err| Error::new(ErrorKind::InvalidData, err)),
+            Payload::Binary(_) => Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED))
         }
     }).boxed()
 }
 
-fn poll(conn_cfg: &ConnectionConfig, tp_cfg: Option<&TransportConfig>,
+fn poll(conn_cfg: &ConnectionConfig,
+        tp_cfg: Option<&TransportConfig>,
         handle: &Handle)
-        -> BoxFuture<Vec<Packet>, EngineError> {
+        -> BoxFuture<Vec<Packet>, Error> {
     prepare_request(http::get(&conn_cfg.url), conn_cfg, tp_cfg)
         .send(handle.clone())
-        .map_err(|err| err.into())
+        .and_then(|resp| resp.ensure_success())
         .and_then(|resp| Packet::from_reader_all(&mut Cursor::new(Vec::<u8>::from(resp))))
         .boxed()
 }
 
-fn send(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig,
+fn send(conn_cfg: &ConnectionConfig,
+        tp_cfg: &TransportConfig,
         handle: &Handle,
         packets: Vec<Packet>)
-        -> BoxFuture<(), EngineError> {
-    let capacity = packets.iter().fold(0usize, |val, p| val + p.try_compute_length(false).unwrap_or(0usize));
+        -> BoxFuture<(), Error> {
+    let capacity = packets.iter().fold(0usize, |val, p| {
+        val + p.compute_payload_length(false)
+    });
     let mut buf = Cursor::new(vec![0; capacity]);
     for packet in packets {
         if let Err(err) = packet.write_payload_to(&mut buf) {
-            return futures::failed(err.into()).boxed();
+            return futures::failed(err).boxed();
         }
     }
 
-    prepare_request(http::post(&conn_cfg.url).body(buf.into_inner()), conn_cfg, Some(tp_cfg))
+    let r = http::post(&conn_cfg.url).body(buf.into_inner());
+    prepare_request(r, conn_cfg, Some(tp_cfg))
         .send(handle.clone())
-        .map_err(|err| err.into())
-        .and_then(|resp| {
-            if resp.is_success() {
-                Ok(())
-            } else {
-                let msg: &str = &format!("Received erroneous HTTP response code {}.", resp.status_code());
-                Err(EngineError::invalid_state(msg))
-            }
-        })
+        .and_then(|resp| resp.ensure_success())
+        .map(|_| ())
         .boxed()
 }
 
-fn start_polling(conn_cfg: ConnectionConfig, tp_cfg: TransportConfig, handle: Handle, sender: stream::Sender<Packet, EngineError>) -> BoxFuture<(), ()> {
-    poll(&conn_cfg, Some(&tp_cfg), &handle).then(|res| {
+fn start_polling(conn_cfg: ConnectionConfig,
+                 tp_cfg: TransportConfig,
+                 handle: Handle,
+                 sender: stream::Sender<Packet, Error>)
+                 -> Box<Future<Item=(), Error=()>> {
+    let fut = poll(&conn_cfg, Some(&tp_cfg), &handle).then(|res| {
         match res {
             Ok(packets) => {
+                fn send_packets(mut packets: Vec<Packet>,
+                                sender: stream::Sender<Packet, Error>)
+                                -> BoxFuture<stream::Sender<Packet, Error>, ()> {
+                    // Make the borrow checker happy
+                    let maybe_packet = {
+                        packets.drain(..1).nth(0)
+                    };
+                    if let Some(first) = maybe_packet {
+                        sender.send(Ok(first))
+                              .map_err(|_| ())
+                              .and_then(move |s| send_packets(packets, s))
+                              .boxed()
+                    } else {
+                        futures::finished(sender).boxed()
+                    }
+                }
 
+                send_packets(packets, sender).boxed()
             },
             Err(err) => {
-
+                 sender.send(Err(err))
+                       .map_err(|_| ())
+                       .then(|_| Err(())) // Stop the polling
+                       .boxed()
             }
-        }
+        }.and_then(move |sender| start_polling(conn_cfg, tp_cfg, handle, sender))
     });
+
+    Box::new(fut)
 }

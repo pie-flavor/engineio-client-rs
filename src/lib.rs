@@ -15,16 +15,16 @@ extern crate url;
 extern crate ws;
 
 mod connection;
-mod error;
 mod packet;
 pub mod transports;
+
+use std::io::Error;
 
 use futures::BoxFuture;
 use tokio_core::reactor::Handle;
 use url::Url;
 
 pub use connection::{Receiver, Sender};
-pub use error::EngineError;
 pub use packet::{OpCode, Packet, Payload};
 
 /// A builder for an engine.io connection.
@@ -54,14 +54,14 @@ enum Path {
 }
 
 /// Creates an engine.io connection to the given endpoint.
-pub fn connect(url: &Url, h: &Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+pub fn connect(url: &Url, h: &Handle) -> BoxFuture<(Sender, Receiver), Error> {
     Builder::new()
         .url(url)
         .build(h)
 }
 
 /// Creates an engine.io connection to the given endpoint.
-pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<(Sender, Receiver), Error> {
     connect(&Url::parse(url).unwrap(), h)
 }
 
@@ -79,7 +79,7 @@ impl Builder {
     ///
     /// ## Panics
     /// Panics if the URL hasn't been set.
-    pub fn build(self, h: &Handle) -> BoxFuture<(Sender, Receiver), EngineError> {
+    pub fn build(self, h: &Handle) -> BoxFuture<(Sender, Receiver), Error> {
         if let Some(mut url) = self.url {
             let c = Config {
                 extra_headers: self.extra_headers,
