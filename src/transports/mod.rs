@@ -6,16 +6,11 @@
 //!
 //! See the modules for further documentation.
 
-use std::cell::RefCell;
 use std::time::Duration;
 
-use rand::{Rng, weak_rng, XorShiftRng};
-use tokio_request::Request;
 
 pub mod polling;
 pub mod websocket;
-
-thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// Represents the transport configuration that is received
 /// during the handshake.

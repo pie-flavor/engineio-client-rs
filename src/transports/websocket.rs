@@ -12,5 +12,3 @@ use ws;
 pub struct Receiver;
 
 pub struct Sender;
-
-pub fn connect_with_config()
