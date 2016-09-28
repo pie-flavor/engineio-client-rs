@@ -14,7 +14,7 @@ use futures::stream::{self, Stream};
 use rustc_serialize::json;
 use tokio_core::reactor::Handle;
 use tokio_request as http;
-use transports::{Config as TransportConfig, prepare_request};
+use transports::Config as TransportConfig;
 
 const HANDSHAKE_BINARY_RECEIVED: &'static str = "Received binary packet when string packet was expected in session initialization.";
 const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one packet as part of the handshake.";
@@ -148,6 +148,18 @@ fn poll(conn_cfg: &ConnectionConfig,
         .and_then(|resp| resp.ensure_success())
         .and_then(|resp| Packet::from_reader_all(&mut Cursor::new(Vec::<u8>::from(resp))))
         .boxed()
+}
+
+fn prepare_request(mut request: Request, conn_cfg: &::Config, tp_cfg: Option<&Config>) -> Request {
+    if let Some(cfg) = tp_cfg {
+        request = request.param("sid", &cfg.sid)
+                         .timeout(cfg.ping_timeout());
+    }
+    request = request.param("EIO", "3")
+                     .param("transport", "polling")
+                     .param("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
+                     .param("b64", "1")
+                     .headers(conn_cfg.extra_headers.clone())
 }
 
 fn send(conn_cfg: &ConnectionConfig,
