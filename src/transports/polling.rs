@@ -259,34 +259,6 @@ mod tests {
 
     #[test]
     fn connection() {
-        let l = Core::new().expect("Failed to create reactor.");
-        let config = ::Config {
-            extra_headers: Vec::new(),
-            url: Url::parse("http://festify.us:5002/engine.io/").unwrap()
-        };
-
-        let (chan_tx, chan_rx) = mpsc::channel();
-        let fut = connect(config.clone(), l.handle()).and_then(|_| println!("Connected"));
-        // let fut = connect(config, l.handle()).and_then(move |(tx, rx)| {
-        //     rx.take(1).for_each(move |pck| {
-        //         match *pck.payload() {
-        //             Payload::Binary(_) => {
-        //                 assert!(false, "Received a binary packet.")
-        //             },
-        //             Payload::String(str) => {
-        //                 chan_tx.send("Got one.");
-        //                 assert!(str.starts_with("Hello"))
-        //             }
-        //         }
-        //         Ok(())
-        //     })
-        // });
-        l.run(fut);
-        match chan_rx.try_recv() {
-            Ok(_) => println!("Got a response!"),
-            Err(mpsc::TryRecvError::Disconnected) => assert!(false, "Channel is disconnected!"),
-            Err(mpsc::TryRecvError::Empty) => assert!(false, "Got no response.")
-        }
         println!("Done");
     }
 }
