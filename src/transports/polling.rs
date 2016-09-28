@@ -29,6 +29,7 @@ const TRANSPORT_PAUSED: &'static str = "Transport is paused. Unpause it before s
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// Represents the receiving half of an HTTP long polling connection.
+#[derive(Debug)]
 pub struct Receiver {
     inner: Rc<Inner>,
     state: State
@@ -65,9 +66,19 @@ enum State {
 ///
 /// This method performs a handshake and then connects to the server.
 pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
-    let f = handshake(&config, &handle)
+    let fut = poll(&config, None, &handle)
+        .and_then(|packets| {
+            if packets.len() == 0 {
+                return Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING));
+            }
+
+            match *packets[0].payload() {
+                Payload::String(ref str) => json::decode(str).map_err(|err| Error::new(ErrorKind::InvalidData, err)),
+                Payload::Binary(_) => Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED))
+            }
+        })
         .map(move |tc| connect_with_config(config, tc, handle));
-    Box::new(f) // .boxed() requires Send, which we don't have
+    Box::new(fut) // .boxed() requires Send, which we don't have
 }
 
 /// Creates a polling connection to the given endpoint using the given transport configuration.
@@ -92,14 +103,6 @@ impl Receiver {
     }
 }
 
-impl Debug for Receiver {
-    fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
-        fmt.debug_tuple("Receiver")
-            .field(&self.inner)
-            .finish()
-    }
-}
-
 impl Stream for Receiver {
     type Item = Packet;
     type Error = Error;
@@ -112,8 +115,7 @@ impl Stream for Receiver {
                     self.state = State::Waiting(fut);
                 },
                 State::Ready(mut packets) => {
-                    // Borrow checker
-                    match { packets.next() } {
+                    match packets.next() {
                         Some(e) => {
                             self.state = State::Ready(packets);
                             return Ok(Async::Ready(Some(e)));
@@ -172,9 +174,21 @@ impl Sender {
 impl Debug for Inner {
     fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
         fmt.debug_struct("Inner")
-            .field("conn_cfg", &self.conn_cfg)
-            .field("tp_cfg", &self.tp_cfg)
-            .finish()
+           .field("conn_cfg", &self.conn_cfg)
+           .field("tp_cfg", &self.tp_cfg)
+           .finish()
+    }
+}
+
+impl Debug for State {
+    fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
+        match *self {
+            State::Empty => fmt.debug_tuple("Empty").finish(),
+            State::Ready(ref iter) => fmt.debug_tuple("Ready")
+                                         .field(&iter)
+                                         .finish(),
+            State::Waiting(_) => fmt.debug_tuple("Waiting").finish()
+        }
     }
 }
 
@@ -185,19 +199,6 @@ fn close(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig, handle: &Handle)
         handle,
         vec![Packet::with_string(OpCode::Close, String::default())]
     )
-}
-
-fn handshake(config: &ConnectionConfig, handle: &Handle) -> BoxFuture<TransportConfig, Error> {
-    poll(config, None, handle).and_then(|packets| {
-        if packets.len() == 0 {
-            return Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING));
-        }
-
-        match *packets[0].payload() {
-            Payload::String(ref str) => json::decode(str).map_err(|err| Error::new(ErrorKind::InvalidData, err)),
-            Payload::Binary(_) => Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED))
-        }
-    }).boxed()
 }
 
 fn poll(conn_cfg: &ConnectionConfig,
