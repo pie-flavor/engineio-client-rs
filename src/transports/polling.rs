@@ -29,6 +29,7 @@ thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// Represents the receiving half of an HTTP long polling connection.
 #[derive(Debug)]
+#[must_use = "Receiver doesn't check for packets unless polled."]
 pub struct Receiver {
     inner: Rc<Inner>,
     state: State
@@ -51,6 +52,9 @@ struct Inner {
 
 /// Inner state of a receiver.
 enum State {
+    /// The connection is closed.
+    Closed,
+
     /// Placeholder state when no future is running.
     Empty,
 
@@ -118,6 +122,7 @@ impl Stream for Receiver {
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
             match mem::replace(&mut self.state, State::Empty) {
+                State::Closed => return Ok(Async::Ready(None)),
                 State::Empty => {
                     let fut = poll(&self.inner.conn_cfg, Some(&self.inner.tp_cfg), &self.inner.handle);
                     self.state = State::Waiting(fut);
@@ -125,8 +130,12 @@ impl Stream for Receiver {
                 State::Ready(mut packets) => {
                     match packets.next() {
                         Some(e) => {
-                            self.state = State::Ready(packets);
-                            return Ok(Async::Ready(Some(e)));
+                            if e.opcode() != OpCode::Close {
+                                self.state = State::Ready(packets);
+                                return Ok(Async::Ready(Some(e)));
+                            } else {
+                                self.state = State::Closed;
+                            }
                         },
                         None => self.state = State::Empty,
                     }
@@ -191,6 +200,7 @@ impl Debug for Inner {
 impl Debug for State {
     fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
         match *self {
+            State::Closed => fmt.debug_tuple("Closed").finish(),
             State::Empty => fmt.debug_tuple("Empty").finish(),
             State::Ready(ref iter) => fmt.debug_tuple("Ready")
                                          .field(&iter)
