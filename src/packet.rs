@@ -216,8 +216,6 @@ impl Packet {
 
     /// Writes the packet as payload into the given `writer`.
     pub fn write_payload_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
-        // If we can precompute the length, we write the contents directly
-        // into the stream instead of writing the packet to memory first.
         let length = self.compute_length(true);
         try!(write!(writer, "{}:", length));
         self.write_to(writer)
