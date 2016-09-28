@@ -6,11 +6,10 @@
 //!
 //! See the modules for further documentation.
 
-use std::time::Duration;
-
-
 pub mod polling;
 pub mod websocket;
+
+use std::time::Duration;
 
 /// Represents the transport configuration that is received
 /// during the handshake.

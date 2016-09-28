@@ -23,7 +23,6 @@ use transports::Config as TransportConfig;
 
 const HANDSHAKE_BINARY_RECEIVED: &'static str = "Received binary packet when string packet was expected in session initialization.";
 const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one packet as part of the handshake.";
-const ONESHOT_COMPLETE_DROPPED: &'static str = "Complete was dropped before it was completed. This is a bug. Please contact the library authors of engineio-rs.";
 const TRANSPORT_PAUSED: &'static str = "Transport is paused. Unpause it before sending packets again.";
 
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
@@ -93,7 +92,16 @@ pub fn connect_with_config(conn_cfg: ConnectionConfig,
         handle: handle,
         tp_cfg: tp_cfg
     });
-    (Sender { inner: data.clone(), is_paused: false }, Receiver { inner: data, state: State::Empty })
+    let tx = Sender {
+        inner: data.clone(),
+        is_paused: false
+    };
+    let rx = Receiver {
+        inner: data,
+        state: State::Empty
+    };
+
+    (tx, rx)
 }
 
 impl Receiver {

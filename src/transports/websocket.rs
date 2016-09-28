@@ -6,6 +6,7 @@
 //! websockets if possible.
 
 use {Config as ConnectionConfig};
+
 use transports::Config as TransportConfig;
 use ws;
 
