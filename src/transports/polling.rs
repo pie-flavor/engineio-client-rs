@@ -9,6 +9,7 @@ use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::io::{Cursor, Error, ErrorKind};
 use std::mem;
 use std::rc::Rc;
+use std::sync::mpsc;
 use std::vec::IntoIter;
 
 use {Config as ConnectionConfig, Packet, OpCode, Payload};
@@ -31,6 +32,7 @@ thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 #[derive(Debug)]
 #[must_use = "Receiver doesn't check for packets unless polled."]
 pub struct Receiver {
+    close_rx: mpsc::Receiver<()>,
     inner: Rc<Inner>,
     state: State
 }
@@ -38,6 +40,7 @@ pub struct Receiver {
 /// Represents the sending half of an HTTP long polling connection.
 #[derive(Debug)]
 pub struct Sender {
+    close_tx: mpsc::Sender<()>,
     inner: Rc<Inner>,
     is_paused: bool
 }
@@ -91,17 +94,20 @@ pub fn connect_with_config(conn_cfg: ConnectionConfig,
                            tp_cfg: TransportConfig,
                            handle: Handle)
                            -> (Sender, Receiver) {
-    let data = Rc::new(Inner {
+    let (close_tx, close_rx) = mpsc::channel();
+    let inner = Rc::new(Inner {
         conn_cfg: conn_cfg,
         handle: handle,
         tp_cfg: tp_cfg
     });
     let tx = Sender {
-        inner: data.clone(),
+        close_tx: close_tx,
+        inner: inner.clone(),
         is_paused: false
     };
     let rx = Receiver {
-        inner: data,
+        close_rx: close_rx,
+        inner: inner,
         state: State::Empty
     };
 
@@ -120,6 +126,10 @@ impl Stream for Receiver {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
+        if let Ok(_) = self.close_rx.try_recv() {
+            self.state = State::Closed;
+        }
+
         loop {
             match mem::replace(&mut self.state, State::Empty) {
                 State::Closed => return Ok(Async::Ready(None)),
@@ -155,6 +165,15 @@ impl Stream for Receiver {
 }
 
 impl Sender {
+    /// Closes the connection to the server.
+    pub fn close(self) -> BoxFuture<(), ()> {
+        let _ = self.close_tx.send(());
+        let pck = Packet::with_string(OpCode::Close, String::default());
+        send(&self.inner.conn_cfg, &self.inner.tp_cfg, &self.inner.handle, vec![pck])
+            .map_err(|_| ())
+            .boxed()
+    }
+
     /// Returns whether the transport currently is paused.
     pub fn is_paused(&self) -> bool {
         self.is_paused
@@ -208,15 +227,6 @@ impl Debug for State {
             State::Waiting(_) => fmt.debug_tuple("Waiting").finish()
         }
     }
-}
-
-fn close(conn_cfg: &ConnectionConfig, tp_cfg: &TransportConfig, handle: &Handle) -> BoxFuture<(), Error> {
-    send(
-        conn_cfg,
-        tp_cfg,
-        handle,
-        vec![Packet::with_string(OpCode::Close, String::default())]
-    )
 }
 
 fn poll(conn_cfg: &ConnectionConfig,
