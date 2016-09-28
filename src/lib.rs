@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 #![warn(missing_docs)]
-#![feature(io, never_type)]
+#![feature(io)]
 
 #![cfg_attr(release, deny(warnings))]
 
