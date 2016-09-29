@@ -11,7 +11,6 @@ use std::str::{FromStr, from_utf8};
 use rustc_serialize::Decodable;
 use rustc_serialize::base64::{self, FromBase64, ToBase64};
 use rustc_serialize::json;
-use ws;
 
 const BUFFER_UNEXPECTED_EOF: &'static str = "Packet opcode or binary indicator could not be read because the end of the buffer string was reached.";
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
@@ -59,6 +58,8 @@ pub enum OpCode {
 
     /// A ping message sent by the client. The server will respond
     /// with a `Pong` message containing the same data.
+    ///
+    /// The payload usually is "probe".
     Ping = 2,
 
     /// The answer to a ping message.
@@ -78,7 +79,7 @@ pub enum OpCode {
 
     /// A noop packet.
     ///
-    /// Used for forcing a polling cycle.
+    /// Sent by the server to force a polling cycle.
     Noop = 6
 }
 
@@ -101,30 +102,32 @@ impl Packet {
         }
     }
 
+    /// Constructs an empty packet with the given opcode.
+    pub fn empty(opcode: OpCode) -> Self {
+        Packet::with_string(opcode, Default::default())
+    }
+
     /// Constructs a new packet with binary data.
-    ///
-    /// This method is a shorthand for `Packet::new(opcode, Payload::Binary(payload))`.
     pub fn with_binary(opcode: OpCode, payload: Vec<u8>) -> Self {
         Packet::new(opcode, Payload::Binary(payload))
     }
 
     /// Constructs a new packet with string data.
     ///
-    /// This method is a shorthand for `Packet::new(opcode, Payload::String(payload.to_owned()))`
+    /// This method is a shorthand for `Packet::with_string(opcode, payload.to_owned())`
     /// and thus copies the string.
     pub fn with_str(opcode: OpCode, payload: &str) -> Self {
         Packet::with_string(opcode, payload.to_owned())
     }
 
     /// Constructs a new packet with string data.
-    ///
-    /// This method is a shorthand for `Packet::new(opcode, Payload::String(payload))`.
     pub fn with_string(opcode: OpCode, payload: String) -> Self {
         Packet::new(opcode, Payload::String(payload))
     }
 
-    /// Tries to parse a packet from a `reader`. The reader will be
-    /// read to its end.
+    /// Tries to parse a packet from a `reader`.
+    ///
+    /// The reader will be read to its end.
     pub fn from_reader<R: Read>(reader: &mut R) -> Result<Self, Error> {
         let mut buf = String::new();
         try!(reader.read_to_string(&mut buf));
@@ -133,23 +136,21 @@ impl Packet {
     }
 
     /// Parses a list of packets in payload encoding from a `reader`.
+    ///
+    /// The reader will be read to its end.
     pub fn from_reader_all<R: BufRead>(reader: &mut R) -> Result<Vec<Self>, Error> {
         let mut results = Vec::with_capacity(1);
         loop {
             match Packet::from_reader_payload(reader) {
                 Ok(packet) => results.push(packet),
-                Err(err) => {
-                    return if results.len() > 0 {
-                        Ok(results)
-                    } else {
-                        Err(err)
-                    }
-                }
+                Err(ref err) if err.kind() == ErrorKind::UnexpectedEof => return Ok(results),
+                Err(err) => return Err(err)
             }
         }
     }
 
     /// Tries to parse a packet in payload encoding from a `reader`.
+    ///
     /// Only the data needed is read from the data source.
     pub fn from_reader_payload<R: BufRead>(reader: &mut R) -> Result<Self, Error> {
         let data_length = {
@@ -260,12 +261,6 @@ impl FromStr for Packet {
     }
 }
 
-impl From<Packet> for ws::Message {
-    fn from(p: Packet) -> Self {
-        ws::Message::Text(p.to_string())
-    }
-}
-
 impl OpCode {
     /// Tries to parse an OpCode from a scalar value encoded as char.
     pub fn from_char(value: char) -> Result<OpCode, Error> {
@@ -306,11 +301,21 @@ impl OpCode {
 }
 
 impl Payload {
-    /// Tries to decode the payload from JSON to an object of the given type.
+    /// Tries to convert the payload contents to a string slice.
+    ///
+    /// Returns `None` when binary data that does not represent valid UTF-8 is encountered.
+    pub fn as_str(&self) -> Option<&str> {
+        match *self {
+            Payload::Binary(ref data) => from_utf8(data).ok(),
+            Payload::String(ref str) => Some(str)
+        }
+    }
+
+    /// Decodes the payload from JSON to an object of the given type.
     ///
     /// If a binary payload is given, this method attempts to read the binary
     /// data as a UTF-8 string and decode from that.
-    pub fn from_json_to<T: Decodable>(&self) -> Result<T, Error> {
+    pub fn from_json<T: Decodable>(&self) -> Result<T, Error> {
         let str = match *self {
             Payload::Binary(ref data) => try!(from_utf8(data).map_err(|err| Error::new(ErrorKind::InvalidData, err))),
             Payload::String(ref str) => str

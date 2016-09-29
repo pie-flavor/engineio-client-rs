@@ -4,7 +4,6 @@
 //! Engine.io always sets up a connection using long polling and
 //! upgrates to web sockets, if possible.
 
-use std::cell::RefCell;
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::io::{Cursor, Error, ErrorKind};
 use std::mem;
@@ -12,45 +11,81 @@ use std::rc::Rc;
 use std::sync::mpsc;
 use std::vec::IntoIter;
 
-use {Config as ConnectionConfig, Packet, OpCode, Payload};
+use {Packet, OpCode};
+use connection::Config;
+use transports::{Data, TRANSPORT_PAUSED};
 
 use futures::{self, Async, BoxFuture, Future, Poll};
 use futures::stream::Stream;
-use rand::{Rng, weak_rng, XorShiftRng};
-use rustc_serialize::json;
 use tokio_core::reactor::Handle;
 use tokio_request as http;
-use transports::Config as TransportConfig;
+use url::Url;
 
 const HANDSHAKE_BINARY_RECEIVED: &'static str = "Received binary packet when string packet was expected in session initialization.";
-const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one packet as part of the handshake.";
-const TRANSPORT_PAUSED: &'static str = "Transport is paused. Unpause it before sending packets again.";
+const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one valid packet as part of the handshake.";
 
-thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
+/// Asynchronously creates a new long polling connection to the given endpoint.
+///
+/// This method performs a handshake and then connects to the server.
+pub fn connect(config: Config, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
+    let fut = poll(&config, None, &handle)
+        .and_then(|packets| {
+            packets.into_iter()
+                   .flat_map(|pck| pck.payload().from_json().into_iter()) // Select only the packets that can be decoded
+                   .nth(0)
+                   .ok_or(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING))
+        })
+        .map(move |tc| connect_with_config(config, tc, handle));
+    Box::new(fut) // .boxed() requires Send, which we don't have
+}
+
+/// Creates a polling connection to the given endpoint using the given transport configuration.
+///
+/// This method does not perform the handshake to obtain the [`Config`](../struct.Config.html).
+pub fn connect_with_config(conn_cfg: Config, data: Data, handle: Handle) -> (Sender, Receiver) {
+    let (close_tx, close_rx) = mpsc::channel();
+    let inner = Rc::new(Inner {
+        conn_cfg: conn_cfg,
+        data: data
+    });
+    let tx = Sender {
+        close_tx: close_tx,
+        handle: handle.clone(),
+        inner: inner.clone(),
+        is_paused: false
+    };
+    let rx = Receiver {
+        close_rx: close_rx,
+        handle: handle,
+        inner: inner,
+        state: State::Empty
+    };
+
+    (tx, rx)
+}
 
 /// Represents the receiving half of an HTTP long polling connection.
-#[derive(Debug)]
 #[must_use = "Receiver doesn't check for packets unless polled."]
 pub struct Receiver {
     close_rx: mpsc::Receiver<()>,
+    handle: Handle,
     inner: Rc<Inner>,
     state: State
 }
 
 /// Represents the sending half of an HTTP long polling connection.
-#[derive(Debug)]
 pub struct Sender {
     close_tx: mpsc::Sender<()>,
+    handle: Handle,
     inner: Rc<Inner>,
     is_paused: bool
 }
 
-/// Common inner state of both `Sender` and `Receiver`.
-#[derive(Clone)]
+/// Common inner state of senders and receivers.
+#[derive(Clone, Debug)]
 struct Inner {
-    conn_cfg: ConnectionConfig,
-    handle: Handle,
-    tp_cfg: TransportConfig
+    conn_cfg: Config,
+    data: Data
 }
 
 /// Inner state of a receiver.
@@ -68,56 +103,19 @@ enum State {
     Waiting(BoxFuture<Vec<Packet>, Error>)
 }
 
-/// Asynchronously creates a new long polling connection to the given endpoint.
-///
-/// This method performs a handshake and then connects to the server.
-pub fn connect(config: ConnectionConfig, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
-    let fut = poll(&config, None, &handle)
-        .and_then(|packets| {
-            if packets.len() == 0 {
-                return Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING));
-            }
-
-            match *packets[0].payload() {
-                Payload::String(ref str) => json::decode(str).map_err(|err| Error::new(ErrorKind::InvalidData, err)),
-                Payload::Binary(_) => Err(Error::new(ErrorKind::InvalidData, HANDSHAKE_BINARY_RECEIVED))
-            }
-        })
-        .map(move |tc| connect_with_config(config, tc, handle));
-    Box::new(fut) // .boxed() requires Send, which we don't have
-}
-
-/// Creates a polling connection to the given endpoint using the given transport configuration.
-///
-/// This method does not perform the handshake to obtain the [`Config`](../struct.Config.html).
-pub fn connect_with_config(conn_cfg: ConnectionConfig,
-                           tp_cfg: TransportConfig,
-                           handle: Handle)
-                           -> (Sender, Receiver) {
-    let (close_tx, close_rx) = mpsc::channel();
-    let inner = Rc::new(Inner {
-        conn_cfg: conn_cfg,
-        handle: handle,
-        tp_cfg: tp_cfg
-    });
-    let tx = Sender {
-        close_tx: close_tx,
-        inner: inner.clone(),
-        is_paused: false
-    };
-    let rx = Receiver {
-        close_rx: close_rx,
-        inner: inner,
-        state: State::Empty
-    };
-
-    (tx, rx)
-}
-
 impl Receiver {
     /// Gets the underlying transport configuration.
-    pub fn transport_config(&self) -> &TransportConfig {
-        &self.inner.tp_cfg
+    pub fn transport_config(&self) -> &Data {
+        &self.inner.data
+    }
+}
+
+impl Debug for Receiver {
+    fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
+        fmt.debug_struct("Receiver")
+           .field("inner", &self.inner)
+           .field("state", &self.state)
+           .finish()
     }
 }
 
@@ -134,7 +132,7 @@ impl Stream for Receiver {
             match mem::replace(&mut self.state, State::Empty) {
                 State::Closed => return Ok(Async::Ready(None)),
                 State::Empty => {
-                    let fut = poll(&self.inner.conn_cfg, Some(&self.inner.tp_cfg), &self.inner.handle);
+                    let fut = poll(&self.inner.conn_cfg, Some(&self.inner.data), &self.handle);
                     self.state = State::Waiting(fut);
                 },
                 State::Ready(mut packets) => {
@@ -168,8 +166,8 @@ impl Sender {
     /// Closes the connection to the server.
     pub fn close(self) -> BoxFuture<(), ()> {
         let _ = self.close_tx.send(());
-        let pck = Packet::with_string(OpCode::Close, String::default());
-        send(&self.inner.conn_cfg, &self.inner.tp_cfg, &self.inner.handle, vec![pck])
+        let pck = Packet::empty(OpCode::Close);
+        send(&self.inner.conn_cfg, &self.inner.data, &self.handle, vec![pck])
             .map_err(|_| ())
             .boxed()
     }
@@ -184,21 +182,20 @@ impl Sender {
         self.is_paused = true;
     }
 
-    /// Sends a packet to the server.
+    /// Sends packets to the server.
     pub fn send(&self, packets: Vec<Packet>) -> BoxFuture<(), Error> {
         if !self.is_paused {
-            send(&self.inner.conn_cfg, &self.inner.tp_cfg, &self.inner.handle, packets)
+            send(&self.inner.conn_cfg, &self.inner.data, &self.handle, packets)
         } else {
             futures::failed(Error::new(
-                ErrorKind::InvalidInput,
-                TRANSPORT_PAUSED
+                ErrorKind::InvalidInput, TRANSPORT_PAUSED
             )).boxed()
         }
     }
 
     /// Gets the underlying transport configuration.
-    pub fn transport_config(&self) -> &TransportConfig {
-        &self.inner.tp_cfg
+    pub fn transport_config(&self) -> &Data {
+        &self.inner.data
     }
 
     /// Unpauses the transport.
@@ -207,11 +204,11 @@ impl Sender {
     }
 }
 
-impl Debug for Inner {
+impl Debug for Sender {
     fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
-        fmt.debug_struct("Inner")
-           .field("conn_cfg", &self.conn_cfg)
-           .field("tp_cfg", &self.tp_cfg)
+        fmt.debug_struct("Sender")
+           .field("inner", &self.inner)
+           .field("is_paused", &self.is_paused)
            .finish()
     }
 }
@@ -229,31 +226,32 @@ impl Debug for State {
     }
 }
 
-fn poll(conn_cfg: &ConnectionConfig,
-        tp_cfg: Option<&TransportConfig>,
+fn poll(conn_cfg: &Config,
+        data: Option<&Data>,
         handle: &Handle)
         -> BoxFuture<Vec<Packet>, Error> {
-    prepare_request(http::get(&conn_cfg.url), conn_cfg, tp_cfg)
+    prepare_request(http::get, conn_cfg, data)
         .send(handle.clone())
         .and_then(|resp| resp.ensure_success())
         .and_then(|resp| Packet::from_reader_all(&mut Cursor::new(Vec::<u8>::from(resp))))
         .boxed()
 }
 
-fn prepare_request(mut request: http::Request, conn_cfg: &ConnectionConfig, tp_cfg: Option<&TransportConfig>) -> http::Request {
-    if let Some(cfg) = tp_cfg {
-        request = request.param("sid", &cfg.sid)
-                         .timeout(cfg.ping_timeout());
+fn prepare_request<R: FnOnce(&Url) -> http::Request>(request_fn: R, conn_cfg: &Config, data: Option<&Data>) -> http::Request {
+    let mut url = conn_cfg.url.clone();
+    if let Some(cfg) = data {
+        cfg.apply_to(&mut url);
     }
-    request.param("EIO", "3")
-           .param("transport", "polling")
-           .param("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
-           .param("b64", "1")
+    let mut request = request_fn(&url);
+    if let Some(cfg) = data {
+        request = request.timeout(cfg.ping_timeout());
+    }
+    request.param("transport", "polling")
            .headers(conn_cfg.extra_headers.clone())
 }
 
-fn send(conn_cfg: &ConnectionConfig,
-        tp_cfg: &TransportConfig,
+fn send(conn_cfg: &Config,
+        data: &Data,
         handle: &Handle,
         packets: Vec<Packet>)
         -> BoxFuture<(), Error> {
@@ -267,8 +265,8 @@ fn send(conn_cfg: &ConnectionConfig,
         }
     }
 
-    let r = http::post(&conn_cfg.url).body(buf.into_inner());
-    prepare_request(r, conn_cfg, Some(tp_cfg))
+    prepare_request(http::post, conn_cfg, Some(data))
+        .body(buf.into_inner())
         .send(handle.clone())
         .and_then(|resp| resp.ensure_success())
         .map(|_| ())
