@@ -16,6 +16,7 @@ use connection::Config;
 use transports::{Data, TRANSPORT_PAUSED};
 
 use futures::{self, Async, BoxFuture, Future, Poll};
+use futures::task;
 use futures::stream::Stream;
 use tokio_core::reactor::Handle;
 use tokio_request as http;
@@ -138,12 +139,8 @@ impl Stream for Receiver {
                 State::Ready(mut packets) => {
                     match packets.next() {
                         Some(e) => {
-                            if e.opcode() != OpCode::Close {
-                                self.state = State::Ready(packets);
-                                return Ok(Async::Ready(Some(e)));
-                            } else {
-                                self.state = State::Closed;
-                            }
+                            self.state = State::Ready(packets);
+                            return Ok(Async::Ready(Some(e)));
                         },
                         None => self.state = State::Empty,
                     }
@@ -153,6 +150,7 @@ impl Stream for Receiver {
                         Async::Ready(packets) => self.state = State::Ready(packets.into_iter()),
                         Async::NotReady => {
                             self.state = State::Waiting(fut);
+                            task::park().unpark();
                             return Ok(Async::NotReady);
                         }
                     }
