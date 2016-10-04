@@ -6,14 +6,13 @@
 
 use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::io::{Cursor, Error, ErrorKind};
-use std::mem;
 use std::rc::Rc;
 use std::sync::mpsc;
 use std::vec::IntoIter;
 
-use {Packet, OpCode};
+use packet::{Packet, OpCode};
 use connection::Config;
-use transports::{Data, TRANSPORT_PAUSED};
+use transports::Data;
 
 use futures::{self, Async, BoxFuture, Future, Poll};
 use futures::task;
@@ -47,53 +46,48 @@ pub fn connect_with_config(conn_cfg: Config, data: Data, handle: Handle) -> (Sen
     let (close_tx, close_rx) = mpsc::channel();
     let inner = Rc::new(Inner {
         conn_cfg: conn_cfg,
-        data: data
+        data: data,
+        handle: handle
     });
     let tx = Sender {
         close_tx: close_tx,
-        handle: handle.clone(),
-        inner: inner.clone(),
-        is_paused: false
+        inner: inner.clone()
     };
     let rx = Receiver {
         close_rx: close_rx,
-        handle: handle,
         inner: inner,
-        state: State::Empty
+        state: Some(State::Empty)
     };
 
     (tx, rx)
 }
 
+/// Represents the sending half of an HTTP long polling connection.
+#[derive(Debug)]
+pub struct Sender {
+    close_tx: mpsc::Sender<()>,
+    inner: Rc<Inner>
+}
+
 /// Represents the receiving half of an HTTP long polling connection.
+#[derive(Debug)]
 #[must_use = "Receiver doesn't check for packets unless polled."]
 pub struct Receiver {
     close_rx: mpsc::Receiver<()>,
-    handle: Handle,
     inner: Rc<Inner>,
-    state: State
-}
-
-/// Represents the sending half of an HTTP long polling connection.
-pub struct Sender {
-    close_tx: mpsc::Sender<()>,
-    handle: Handle,
-    inner: Rc<Inner>,
-    is_paused: bool
+    state: Option<State>
 }
 
 /// Common inner state of senders and receivers.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 struct Inner {
     conn_cfg: Config,
-    data: Data
+    data: Data,
+    handle: Handle
 }
 
 /// Inner state of a receiver.
 enum State {
-    /// The connection is closed.
-    Closed,
-
     /// Placeholder state when no future is running.
     Empty,
 
@@ -111,45 +105,40 @@ impl Receiver {
     }
 }
 
-impl Debug for Receiver {
-    fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
-        fmt.debug_struct("Receiver")
-           .field("inner", &self.inner)
-           .field("state", &self.state)
-           .finish()
-    }
-}
-
 impl Stream for Receiver {
     type Item = Packet;
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         if let Ok(_) = self.close_rx.try_recv() {
-            self.state = State::Closed;
+            self.state = None;
+            return Ok(Async::Ready(None));
         }
 
         loop {
-            match mem::replace(&mut self.state, State::Empty) {
-                State::Closed => return Ok(Async::Ready(None)),
+            match self.state.take().expect("Cannot poll Receiver twice.") {
                 State::Empty => {
-                    let fut = poll(&self.inner.conn_cfg, Some(&self.inner.data), &self.handle);
-                    self.state = State::Waiting(fut);
+                    let fut = poll(
+                        &self.inner.conn_cfg,
+                        Some(&self.inner.data),
+                        &self.inner.handle
+                    );
+                    self.state = Some(State::Waiting(fut));
                 },
                 State::Ready(mut packets) => {
                     match packets.next() {
                         Some(e) => {
-                            self.state = State::Ready(packets);
+                            self.state = Some(State::Ready(packets));
                             return Ok(Async::Ready(Some(e)));
                         },
-                        None => self.state = State::Empty,
+                        None => self.state = Some(State::Empty),
                     }
                 },
                 State::Waiting(mut fut) => {
                     match try!(fut.poll()) {
-                        Async::Ready(packets) => self.state = State::Ready(packets.into_iter()),
+                        Async::Ready(packets) => self.state = Some(State::Ready(packets.into_iter())),
                         Async::NotReady => {
-                            self.state = State::Waiting(fut);
+                            self.state = Some(State::Waiting(fut));
                             task::park().unpark();
                             return Ok(Async::NotReady);
                         }
@@ -165,48 +154,27 @@ impl Sender {
     pub fn close(self) -> BoxFuture<(), ()> {
         let _ = self.close_tx.send(());
         let pck = Packet::empty(OpCode::Close);
-        send(&self.inner.conn_cfg, &self.inner.data, &self.handle, vec![pck])
+        send(&self.inner.conn_cfg, &self.inner.data, &self.inner.handle, vec![pck])
             .map_err(|_| ())
             .boxed()
     }
 
-    /// Returns whether the transport currently is paused.
-    pub fn is_paused(&self) -> bool {
-        self.is_paused
-    }
-
-    /// Pauses the transport.
-    pub fn pause(&mut self) {
-        self.is_paused = true;
-    }
-
     /// Sends packets to the server.
     pub fn send(&self, packets: Vec<Packet>) -> BoxFuture<(), Error> {
-        if !self.is_paused {
-            send(&self.inner.conn_cfg, &self.inner.data, &self.handle, packets)
-        } else {
-            futures::failed(Error::new(
-                ErrorKind::InvalidInput, TRANSPORT_PAUSED
-            )).boxed()
-        }
+        send(&self.inner.conn_cfg, &self.inner.data, &self.inner.handle, packets)
     }
 
     /// Gets the underlying transport configuration.
     pub fn transport_config(&self) -> &Data {
         &self.inner.data
     }
-
-    /// Unpauses the transport.
-    pub fn unpause(&mut self) {
-        self.is_paused = false
-    }
 }
 
-impl Debug for Sender {
+impl Debug for Inner {
     fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
-        fmt.debug_struct("Sender")
-           .field("inner", &self.inner)
-           .field("is_paused", &self.is_paused)
+        fmt.debug_struct("Inner")
+           .field("conn_cfg", &self.conn_cfg)
+           .field("data", &self.data)
            .finish()
     }
 }
@@ -214,7 +182,6 @@ impl Debug for Sender {
 impl Debug for State {
     fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
         match *self {
-            State::Closed => fmt.debug_tuple("Closed").finish(),
             State::Empty => fmt.debug_tuple("Empty").finish(),
             State::Ready(ref iter) => fmt.debug_tuple("Ready")
                                          .field(&iter)

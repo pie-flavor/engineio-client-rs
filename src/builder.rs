@@ -79,6 +79,8 @@ impl Builder {
 
     /// Instructs the builder to take the given url as is and to not append an
     /// additional path at the end.
+    ///
+    /// See [`Builder::path`](struct.Builder.html#method.path) for more information.
     pub fn do_not_append(mut self) -> Self {
         self.path = Path::DoNotAppend;
         self
@@ -100,10 +102,10 @@ impl Builder {
 
     /// Sets the path of the engine.io endpoint.
     ///
-    /// If this or [`do_not_append`](struct.Builder.html#method.do_not_append) is not set,
+    /// If this or [`Builder::do_not_append`](struct.Builder.html#method.do_not_append) is not set,
     /// the [`Builder`](struct.Builder.html) will check for an existing path on the url.
     /// If one exists, it is not modified. Otherwise `/engine.io/` will be appended to
-    /// the URL since that is where engine.io usually lives / spawns it's server.
+    /// the URL since that is where engine.io usually lives / spawns its server.
     ///
     /// In case of socket.io, the path is `/socket.io/`.
     pub fn path(mut self, path: &str) -> Self {

@@ -15,8 +15,6 @@ use std::time::Duration;
 use rand::{Rng, weak_rng, XorShiftRng};
 use url::Url;
 
-const TRANSPORT_PAUSED: &'static str = "Transport is paused. Unpause it before sending packets again.";
-
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// Represents the transport configuration that is received

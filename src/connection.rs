@@ -1,6 +1,6 @@
 use std::io::Error;
 
-use {Packet};
+use packet::Packet;
 use transports::Data;
 
 use futures::{BoxFuture, Poll};
