@@ -25,9 +25,7 @@ const CONNECTION_CLOSED_BEFORE_HANDSHAKE: &'static str = "Connection was closed 
 /// ## Panics
 /// Panics when the thread used to drive the websockets cannot
 /// be spawned (very rare).
-pub fn connect(conn_cfg: &Config, tp_cfg: &Data) -> BoxFuture<(Sender, Receiver), Error> {
-    let mut conn_cfg = conn_cfg.clone();
-    let tp_cfg = tp_cfg.clone();
+pub fn connect(mut conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), Error> {
     let (sender_tx, sender_rx) = mpsc::channel();
     let (event_tx, event_rx) = mpsc::channel();
 
@@ -60,7 +58,7 @@ pub fn connect(conn_cfg: &Config, tp_cfg: &Data) -> BoxFuture<(Sender, Receiver)
 }
 
 /// The sending half of the engine.io websocket connection.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Sender(ws::Sender);
 
 /// The receiving half of the engine.io websocket connection.

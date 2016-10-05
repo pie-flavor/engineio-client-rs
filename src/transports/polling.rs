@@ -15,7 +15,6 @@ use connection::Config;
 use transports::Data;
 
 use futures::{self, Async, BoxFuture, Future, Poll};
-use futures::task;
 use futures::stream::Stream;
 use tokio_core::reactor::Handle;
 use tokio_request as http;
@@ -23,26 +22,23 @@ use url::Url;
 
 const HANDSHAKE_BINARY_RECEIVED: &'static str = "Received binary packet when string packet was expected in session initialization.";
 const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one valid packet as part of the handshake.";
+const HTTP_INVALID_STATUS_CODE: &'static str = "Received an invalid HTTP status code.";
 
 /// Asynchronously creates a new long polling connection to the given endpoint.
 ///
 /// This method performs a handshake and then connects to the server.
 pub fn connect(config: Config, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
-    let fut = poll(&config, None, &handle)
-        .and_then(|packets| {
-            packets.into_iter()
-                   .flat_map(|pck| pck.payload().from_json().into_iter()) // Select only the packets that can be decoded
-                   .nth(0)
-                   .ok_or(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING))
-        })
-        .map(move |tc| connect_with_config(config, tc, handle));
-    Box::new(fut) // .boxed() requires Send, which we don't have
+    // .boxed() requires Send, which we don't have
+    Box::new(
+        get_data(&config, &handle)
+            .map(move |tc| connect_with_data(config, tc, handle))
+    )
 }
 
 /// Creates a polling connection to the given endpoint using the given transport configuration.
 ///
 /// This method does not perform the handshake to obtain the [`Config`](../struct.Config.html).
-pub fn connect_with_config(conn_cfg: Config, data: Data, handle: Handle) -> (Sender, Receiver) {
+pub fn connect_with_data(conn_cfg: Config, data: Data, handle: Handle) -> (Sender, Receiver) {
     let (close_tx, close_rx) = mpsc::channel();
     let inner = Rc::new(Inner {
         conn_cfg: conn_cfg,
@@ -62,8 +58,23 @@ pub fn connect_with_config(conn_cfg: Config, data: Data, handle: Handle) -> (Sen
     (tx, rx)
 }
 
+/// Obtains the configuration data used to set up an engine.io connection.
+pub fn get_data(config: &Config, handle: &Handle) -> BoxFuture<Data, Error> {
+    poll(config, None, handle)
+        .and_then(|packets| {
+            // Result implements an iterator that either returns the element
+            // in the Ok-case or nothing in the Err-case. We use this to select
+            // only the packets where the deserialization has been successful.
+            packets.into_iter()
+                   .flat_map(|pck| pck.payload().from_json().into_iter())
+                   .nth(0)
+                   .ok_or(Error::new(ErrorKind::InvalidData, HANDSHAKE_PACKET_MISSING))
+        })
+        .boxed()
+}
+
 /// Represents the sending half of an HTTP long polling connection.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Sender {
     close_tx: mpsc::Sender<()>,
     inner: Rc<Inner>
@@ -100,7 +111,7 @@ enum State {
 
 impl Receiver {
     /// Gets the underlying transport configuration.
-    pub fn transport_config(&self) -> &Data {
+    pub fn transport_data(&self) -> &Data {
         &self.inner.data
     }
 }
@@ -139,7 +150,6 @@ impl Stream for Receiver {
                         Async::Ready(packets) => self.state = Some(State::Ready(packets.into_iter())),
                         Async::NotReady => {
                             self.state = Some(State::Waiting(fut));
-                            task::park().unpark();
                             return Ok(Async::NotReady);
                         }
                     }
@@ -165,7 +175,7 @@ impl Sender {
     }
 
     /// Gets the underlying transport configuration.
-    pub fn transport_config(&self) -> &Data {
+    pub fn transport_data(&self) -> &Data {
         &self.inner.data
     }
 }
@@ -197,8 +207,11 @@ fn poll(conn_cfg: &Config,
         -> BoxFuture<Vec<Packet>, Error> {
     prepare_request(http::get, conn_cfg, data)
         .send(handle.clone())
-        .and_then(|resp| resp.ensure_success())
-        .and_then(|resp| Packet::from_reader_all(&mut Cursor::new(Vec::<u8>::from(resp))))
+        .and_then(|resp| {
+            resp.ensure_success()
+                .map_err(|_| Error::new(ErrorKind::InvalidData, HTTP_INVALID_STATUS_CODE))
+        })
+        .and_then(|resp| Packet::from_reader_all(&mut Cursor::new(resp)))
         .boxed()
 }
 
@@ -233,7 +246,10 @@ fn send(conn_cfg: &Config,
     prepare_request(http::post, conn_cfg, Some(data))
         .body(buf.into_inner())
         .send(handle.clone())
-        .and_then(|resp| resp.ensure_success())
+        .and_then(|resp| {
+            resp.ensure_success()
+                .map_err(|_| Error::new(ErrorKind::InvalidData, HTTP_INVALID_STATUS_CODE))
+        })
         .map(|_| ())
         .boxed()
 }

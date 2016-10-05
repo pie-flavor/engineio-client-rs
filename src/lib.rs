@@ -21,7 +21,7 @@ pub mod transports;
 
 use std::io::Error;
 
-use futures::BoxFuture;
+use futures::Future;
 use tokio_core::reactor::Handle;
 use url::Url;
 
@@ -30,11 +30,11 @@ pub use connection::{Receiver, Sender};
 pub use packet::{OpCode, Packet, Payload};
 
 /// Creates an engine.io connection to the given endpoint.
-pub fn connect(url: &Url, h: &Handle) -> BoxFuture<(Sender, Receiver), Error> {
+pub fn connect(url: &Url, h: &Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
     Builder::new(url.clone()).build(h)
 }
 
 /// Creates an engine.io connection to the given endpoint.
-pub fn connect_str(url: &str, h: &Handle) -> BoxFuture<(Sender, Receiver), Error> {
+pub fn connect_str(url: &str, h: &Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
     Builder::new_with_str(url).build(h)
 }

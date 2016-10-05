@@ -5,7 +5,7 @@ use std::io::Error;
 use connection::{self, Config, Sender, Receiver};
 use transports::Data;
 
-use futures::BoxFuture;
+use futures::Future;
 use tokio_core::reactor::Handle;
 use url::Url;
 
@@ -57,7 +57,7 @@ impl Builder {
     }
 
     /// Asynchronously builds a new engine.io connection to the given endpoint.
-    pub fn build(mut self, h: &Handle) -> BoxFuture<(Sender, Receiver), Error> {
+    pub fn build(mut self, h: &Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
         let c = Config {
             extra_headers: self.extra_headers,
             url: match self.path {
