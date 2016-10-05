@@ -13,7 +13,7 @@ use packet::{Packet, OpCode};
 use connection::Config;
 use transports::Data;
 
-use futures::{Async, BoxFuture, Future, Poll};
+use futures::{self, Async, BoxFuture, Future, Poll};
 use futures::task;
 use futures::stream::Stream;
 use ws::{self, CloseCode, Message};
@@ -25,36 +25,40 @@ const CONNECTION_CLOSED_BEFORE_HANDSHAKE: &'static str = "Connection was closed 
 /// ## Panics
 /// Panics when the thread used to drive the websockets cannot
 /// be spawned (very rare).
-pub fn connect(mut conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), Error> {
-    let (sender_tx, sender_rx) = mpsc::channel();
-    let (event_tx, event_rx) = mpsc::channel();
+pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), Error> {
+    fn _connect(mut conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), Error> {
+        let (sender_tx, sender_rx) = mpsc::channel();
+        let (event_tx, event_rx) = mpsc::channel();
 
-    thread::Builder::new()
-        .name("engine.io websocket thread".to_owned())
-        .spawn(move || {
-            tp_cfg.apply_to(&mut conn_cfg.url);
-            conn_cfg.url.query_pairs_mut()
-                        .append_pair("transport", "websocket");
+        thread::Builder::new()
+            .name("engine.io websocket thread".to_owned())
+            .spawn(move || {
+                tp_cfg.apply_to(&mut conn_cfg.url);
+                conn_cfg.url.query_pairs_mut()
+                            .append_pair("transport", "websocket");
 
-            ws::connect(conn_cfg.url.to_string(), move |sender| {
-                let _ = sender_tx.send(sender.clone());
-                Handler {
-                    tx: event_tx.clone(), // FnMut closure
-                    ws: sender
-                }
-            }).expect("Failed to create the websocket.");
-        })
-        .expect("Failed to start websocket thread.");
+                ws::connect(conn_cfg.url.to_string(), move |sender| {
+                    let _ = sender_tx.send(sender.clone());
+                    Handler {
+                        tx: event_tx.clone(), // FnMut closure
+                        ws: sender
+                    }
+                }).expect("Failed to create the websocket.");
+            })
+            .expect("Failed to start websocket thread.");
 
-    WaitForSender(Some((sender_rx, event_rx)))
-        .map_err(|err| Error::new(ErrorKind::Other, err))
-        .and_then(|data| {
-            try!(data.0.send(Packet::with_str(OpCode::Ping, "probe"))
-                       .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err)));
-            Ok(data)
-        })
-        .and_then(|data| WaitForHandshake(Some(data)))
-        .boxed()
+        WaitForSender(Some((sender_rx, event_rx)))
+            .map_err(|err| Error::new(ErrorKind::Other, err))
+            .and_then(|data| {
+                try!(data.0.send(Packet::with_str(OpCode::Ping, "probe"))
+                        .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err)));
+                Ok(data)
+            })
+            .and_then(|data| WaitForHandshake(Some(data)))
+            .boxed()
+    }
+
+    futures::lazy(move || _connect(conn_cfg, tp_cfg)).boxed()
 }
 
 /// The sending half of the engine.io websocket connection.
