@@ -51,7 +51,7 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), 
             .map_err(|err| Error::new(ErrorKind::Other, err))
             .and_then(|data| {
                 try!(data.0.send(Packet::with_str(OpCode::Ping, "probe"))
-                        .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err)));
+                           .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err)));
                 Ok(data)
             })
             .and_then(|data| WaitForHandshake(Some(data)))
