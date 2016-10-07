@@ -12,7 +12,7 @@ use std::vec::IntoIter;
 
 use packet::{Packet, OpCode};
 use connection::Config;
-use transports::Data;
+use transports::{CloseInitiator, Data, gen_random_string};
 
 use futures::{self, Async, BoxFuture, Future, Poll};
 use futures::stream::Stream;
@@ -159,10 +159,14 @@ impl Stream for Receiver {
 
 impl Sender {
     /// Closes the connection to the server.
-    pub fn close(self) -> BoxFuture<(), Error> {
+    pub fn close(self, initiator: CloseInitiator) -> BoxFuture<(), Error> {
         let _ = self.close_tx.send(());
-        let pck = Packet::empty(OpCode::Close);
-        self.send(vec![pck])
+        if initiator == CloseInitiator::Client {
+            let pck = Packet::empty(OpCode::Close);
+            self.send(vec![pck])
+        } else {
+            futures::finished(()).boxed()
+        }
     }
 
     /// Sends packets to the server.
@@ -182,7 +186,7 @@ impl Sender {
             .send(self.inner.handle.clone())
             .and_then(|resp| {
                 resp.ensure_success()
-                    .map_err(|_| Error::new(ErrorKind::InvalidData, HTTP_INVALID_STATUS_CODE))
+                .map_err(|res| Error::new(ErrorKind::InvalidData, format!("{} {:?}", HTTP_INVALID_STATUS_CODE, res).as_ref()))
             })
             .map(|_| ())
             .boxed()
@@ -223,7 +227,7 @@ fn poll(conn_cfg: &Config,
         .send(handle.clone())
         .and_then(|resp| {
             resp.ensure_success()
-                .map_err(|_| Error::new(ErrorKind::InvalidData, HTTP_INVALID_STATUS_CODE))
+                .map_err(|res| Error::new(ErrorKind::InvalidData, format!("{} {:?}", HTTP_INVALID_STATUS_CODE, res).as_ref()))
         })
         .and_then(|resp| Packet::from_reader_all(&mut Cursor::new(resp)))
         .boxed()
@@ -238,7 +242,10 @@ fn prepare_request<R: FnOnce(&Url) -> http::Request>(request_fn: R, conn_cfg: &C
     if let Some(cfg) = data {
         request = request.timeout(cfg.ping_timeout());
     }
-    request.param("transport", "polling")
+    request.param("EIO", "3")
+           .param("transport", "polling")
+           .param("t", &gen_random_string())
+           .param("b64", "1")
            .headers(conn_cfg.extra_headers.clone())
 }
 
@@ -247,14 +254,56 @@ mod tests {
     use std::sync::mpsc;
 
     use super::*;
+    use connection::Config;
     use packet::*;
+    use transports::Data;
 
+    use futures::Future;
     use futures::stream::Stream;
     use tokio_core::reactor::{Core, Handle};
     use url::Url;
 
+    const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+    fn get_config() -> Config {
+        Config {
+            extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
+            url: Url::parse(ENGINEIO_URL).unwrap()
+        }
+    }
+
     #[test]
     fn connection() {
-        println!("Done");
+        let mut c = Core::new().unwrap();
+        let fut = connect(get_config(), c.handle())
+            .then(|res| {
+                assert!(res.is_ok(), "Failed to connect to server: {:?}", res);
+                res
+            })
+            .and_then(|(tx, rx)| {
+                tx.send(vec![Packet::with_str(OpCode::Message, "Hello!")])
+                  .join(rx.take(1).collect())
+            })
+            .and_then(|(_, packets)| {
+                assert!(packets.len() == 1);
+                println!("Received the following packet: {:?}", packets[0]);
+                Ok(())
+            });
+        c.run(fut).unwrap();
+    }
+
+    #[test]
+    fn transport_config() {
+        let mut c = Core::new().unwrap();
+        let fut = get_data(&get_config(), &c.handle())
+            .then(|res| {
+                assert!(res.is_ok(), "Failed to get transport config: {:?}", res);
+                res
+            })
+            .and_then(|tp_cfg| {
+                assert!(!tp_cfg.sid().is_empty());
+                Ok(())
+            });
+        c.run(fut).unwrap();
     }
 }

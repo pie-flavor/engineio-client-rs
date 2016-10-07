@@ -17,6 +17,16 @@ use url::Url;
 
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
+/// Indicates who started the closing of the connection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CloseInitiator {
+    /// The client requested to close the connection.
+    Client,
+
+    /// The server closed the connection.
+    Server
+}
+
 /// Represents the transport configuration that is received
 /// during the handshake.
 #[allow(non_snake_case)]
@@ -32,10 +42,7 @@ impl Data {
     /// Modifies the given URL with the information in this struct.
     pub fn apply_to(&self, url: &mut Url) {
         url.query_pairs_mut()
-           .append_pair("EIO", "3")
-           .append_pair("sid", &self.sid)
-           .append_pair("t", &RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>()))
-           .append_pair("b64", "1");
+           .append_pair("sid", &self.sid);
     }
 
     /// Gets the interval that states how often the server shall be pinged.
@@ -57,4 +64,10 @@ impl Data {
     pub fn upgrades(&self) -> &[String] {
         &self.upgrades
     }
+}
+
+/// Generates a seven characters long random ASCII string for
+/// URL randomization and cache busting.
+fn gen_random_string() -> String {
+    RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>())
 }

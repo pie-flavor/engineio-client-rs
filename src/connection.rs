@@ -8,7 +8,7 @@ use std::rc::Rc;
 use std::sync::mpsc;
 
 use packet::{OpCode, Packet};
-use transports::Data;
+use transports::{CloseInitiator, Data};
 use transports::polling as poll;
 use transports::websocket as ws;
 
@@ -122,12 +122,12 @@ impl Sender {
         let _ = self.close_tx.send(());
 
         if let Ok(Some(ws)) = Rc::try_unwrap(self.ws_tx).map(|cell| cell.into_inner()) {
-            ws.close()
+            ws.close(CloseInitiator::Client)
               .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err))
               .into_future()
               .boxed()
         } else {
-            self.poll_tx.close()
+            self.poll_tx.close(CloseInitiator::Client)
         }
     }
 

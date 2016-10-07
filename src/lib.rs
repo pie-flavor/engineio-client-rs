@@ -1,7 +1,6 @@
 //! An engine.io client library written in and for Rust.
 
 #![feature(io)]
-
 #![cfg_attr(release, deny(missing_docs, warnings))]
 
 extern crate futures;

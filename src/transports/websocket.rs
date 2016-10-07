@@ -12,7 +12,7 @@ use std::thread;
 
 use packet::{Packet, OpCode};
 use connection::Config;
-use transports::Data;
+use transports::{CloseInitiator, Data, gen_random_string};
 
 use futures::{self, Async, Future, Poll};
 use futures::stream::Stream;
@@ -38,7 +38,10 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> Box<Future<Ite
             .spawn(move || {
                 tp_cfg.apply_to(&mut conn_cfg.url);
                 conn_cfg.url.query_pairs_mut()
-                            .append_pair("transport", "websocket");
+                            .append_pair("EIO", "3")
+                            .append_pair("transport", "websocket")
+                            .append_pair("t", &gen_random_string())
+                            .append_pair("b64", "1");
 
                 ws::connect(conn_cfg.url.to_string(), move |sender| {
                     let _ = sender_tx.send(sender.clone());
@@ -141,9 +144,11 @@ impl Stream for Receiver {
 
 impl Sender {
     /// Closes the connection to the server.
-    pub fn close(self) -> Result<(), ws::Error> {
-        try!(self.0.send(Packet::empty(OpCode::Close)));
-        try!(self.0.close(CloseCode::Normal));
+    pub fn close(self, initiator: CloseInitiator) -> Result<(), ws::Error> {
+        if initiator == CloseInitiator::Client {
+            try!(self.0.send(Packet::empty(OpCode::Close)));
+            try!(self.0.close(CloseCode::Normal));
+        }
         Ok(())
     }
 
