@@ -2,7 +2,7 @@
 name = "engineio-client"
 version = "0.1.0"
 authors = ["Moritz Gunz <moritz.gunz@gmail.com>"]
-description = "An engine.io client library in Rust."
+description = "An engine.io client library using asynchronous I/O."
 readme = "README.md"
 repository = "https://github.com/NeoLegends/engineio-client-rs"
 keywords = ["engine", "engineio", "engine.io", "client", "websocket"]

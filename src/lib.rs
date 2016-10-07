@@ -1,4 +1,4 @@
-//! An engine.io client library written in and for Rust.
+//! An engine.io client library using asynchronous I/O.
 
 #![feature(io)]
 #![cfg_attr(release, deny(missing_docs, warnings))]
@@ -26,12 +26,12 @@ pub use builder::Builder;
 pub use connection::{Receiver, Sender};
 pub use packet::{OpCode, Packet, Payload};
 
-/// Creates an engine.io connection to the given endpoint.
+/// Quickly creates an engine.io connection to the given endpoint.
 pub fn connect(url: &Url, h: &Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
     Builder::new(url.clone()).build(h)
 }
 
-/// Creates an engine.io connection to the given endpoint.
+/// Quickly creates an engine.io connection to the given endpoint.
 pub fn connect_str(url: &str, h: &Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
     Builder::new_with_str(url).build(h)
 }
