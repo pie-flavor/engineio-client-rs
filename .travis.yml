@@ -1,3 +1,10 @@
 language: rust
-rust:
-  - nightly
+rust: nightly
+sudo: false
+
+cache:
+  - cargo
+
+env:
+  global:
+    - RUST_BACKTRACE=1
