@@ -49,7 +49,7 @@ pub fn connect_with_data(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> (Sen
     let (ws_tx, ws_rx) = (Rc::new(RefCell::new(None)), Rc::new(RefCell::new(None)));
     let (ws_tx_w, ws_rx_w) = (Rc::downgrade(&ws_tx), Rc::downgrade(&ws_rx));
 
-    let fut = ws::connect(conn_cfg.clone(), tp_cfg.clone())
+    let fut = ws::connect(conn_cfg.clone(), tp_cfg.clone(), handle.clone())
         .map_err(|_| ())
         .and_then(move |txrx| {
             // Before we make the websocket connection available to the end

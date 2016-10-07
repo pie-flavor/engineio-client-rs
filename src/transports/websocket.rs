@@ -5,30 +5,33 @@
 //! up connections using HTTP long polling and then switches over to
 //! websockets if possible.
 
+use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::io::{Cursor, Error, ErrorKind};
-use std::sync::mpsc::{self, TryRecvError};
+use std::sync::mpsc::{TryRecvError};
 use std::thread;
 
 use packet::{Packet, OpCode};
 use connection::Config;
 use transports::Data;
 
-use futures::{self, Async, BoxFuture, Future, Poll};
-use futures::task;
+use futures::{self, Async, Future, Poll};
 use futures::stream::Stream;
+use tokio_core::channel as core;
+use tokio_core::reactor::Handle;
 use ws::{self, CloseCode, Message};
 
 const CONNECTION_CLOSED_BEFORE_HANDSHAKE: &'static str = "Connection was closed by the server before the handshake could've taken place.";
+const HANDSHAKE_PAYLOAD: &'static str = "probe";
 
 /// Create a new websocket connection to the given endpoint.
 ///
 /// ## Panics
 /// Panics when the thread used to drive the websockets cannot
 /// be spawned (very rare).
-pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), Error> {
-    fn _connect(mut conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), Error> {
-        let (sender_tx, sender_rx) = mpsc::channel();
-        let (event_tx, event_rx) = mpsc::channel();
+pub fn connect(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
+    fn _connect(mut conn_cfg: Config, tp_cfg: Data, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
+        let (sender_tx, sender_rx) = core::channel(&handle).unwrap();
+        let (event_tx, event_rx) = core::channel(&handle).unwrap();
 
         thread::Builder::new()
             .name("Engine.io websocket thread".to_owned())
@@ -50,7 +53,7 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), 
         WaitForSender(Some((sender_rx, event_rx)))
             .map_err(|err| Error::new(ErrorKind::Other, err))
             .and_then(|data| {
-                try!(data.0.send(Packet::with_str(OpCode::Ping, "probe"))
+                try!(data.0.send(Packet::with_str(OpCode::Ping, HANDSHAKE_PAYLOAD))
                            .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err)));
                 Ok(data)
             })
@@ -58,7 +61,7 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), 
             .boxed()
     }
 
-    futures::lazy(move || _connect(conn_cfg, tp_cfg)).boxed()
+    Box::new(futures::lazy(move || _connect(conn_cfg, tp_cfg, handle)))
 }
 
 /// The sending half of the engine.io websocket connection.
@@ -66,9 +69,8 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), 
 pub struct Sender(ws::Sender);
 
 /// The receiving half of the engine.io websocket connection.
-#[derive(Debug)]
 #[must_use = "Receiver doesn't check for packets unless polled."]
-pub struct Receiver(Option<mpsc::Receiver<Event>>);
+pub struct Receiver(Option<core::Receiver<Event>>);
 
 /// Information about an incoming websocket event.
 #[derive(Debug)]
@@ -85,17 +87,23 @@ enum Event {
 
 /// A struct for implementing the websocket handler.
 struct Handler {
-    tx: mpsc::Sender<Event>,
+    tx: core::Sender<Event>,
     ws: ws::Sender
 }
 
 /// The future that waits for the sender to be created.
 #[must_use = "Futures do nothing unless polled."]
-struct WaitForSender(Option<(mpsc::Receiver<ws::Sender>, mpsc::Receiver<Event>)>);
+struct WaitForSender(Option<(core::Receiver<ws::Sender>, core::Receiver<Event>)>);
 
 /// The future that sets up the websocket connection.
 #[must_use = "Futures do nothing unless polled."]
-struct WaitForHandshake(Option<(ws::Sender, mpsc::Receiver<Event>)>);
+struct WaitForHandshake(Option<(ws::Sender, core::Receiver<Event>)>);
+
+impl Debug for Receiver {
+    fn fmt(&self, fmt: &mut Formatter) -> FmtResult {
+        fmt.debug_tuple("Receiver").finish()
+    }
+}
 
 impl Stream for Receiver {
     type Item = Packet;
@@ -103,22 +111,28 @@ impl Stream for Receiver {
 
     fn poll(&mut self) -> Poll<Option<Self::Item>, Self::Error> {
         loop {
-            let rx = self.0.take().expect("Cannot poll Receiver twice.");
-            match rx.try_recv() {
-                Ok(Event::Close) | Err(TryRecvError::Disconnected) => {
+            let mut rx = self.0.take().expect("Cannot poll Receiver twice.");
+
+            match rx.poll() {
+                Ok(Async::Ready(Some(event))) => {
+                    match event {
+                        Event::Close => return Ok(Async::Ready(None)),
+                        Event::Error(err) => return Err(err),
+                        Event::Packet(pck) => {
+                            self.0 = Some(rx);
+                            return Ok(Async::Ready(Some(pck)));
+                        }
+                    }
+                },
+                Ok(Async::Ready(None)) => {
                     return Ok(Async::Ready(None));
                 },
-                Ok(Event::Error(err)) => {
-                    return Err(err);
-                },
-                Ok(Event::Packet(pck)) => {
+                Ok(Async::NotReady) => {
                     self.0 = Some(rx);
-                    return Ok(Async::Ready(Some(pck)));
-                },
-                Err(TryRecvError::Empty) => {
-                    self.0 = Some(rx);
-                    task::park().unpark();
                     return Ok(Async::NotReady);
+                },
+                Err(err) => {
+                    return Err(err.into());
                 }
             }
         }
@@ -163,20 +177,20 @@ impl ws::Handler for Handler {
 }
 
 impl Future for WaitForSender {
-    type Item = (ws::Sender, mpsc::Receiver<Event>);
-    type Error = TryRecvError;
+    type Item = (ws::Sender, core::Receiver<Event>);
+    type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let (ws_rx, ev_rx) = self.0.take().expect("Cannot poll WaitForSender twice.");
+        let (mut ws_rx, ev_rx) = self.0.take().expect("Cannot poll WaitForSender twice.");
 
-        match ws_rx.try_recv() {
-            Ok(sender) => Ok(Async::Ready((sender, ev_rx))),
-            Err(err @ TryRecvError::Disconnected) => Err(err),
-            Err(TryRecvError::Empty) => {
+        match ws_rx.poll() {
+            Ok(Async::Ready(Some(sender))) => Ok(Async::Ready((sender, ev_rx))),
+            Ok(Async::Ready(None)) => Err(Error::new(ErrorKind::Other, TryRecvError::Disconnected)),
+            Ok(Async::NotReady) => {
                 self.0 = Some((ws_rx, ev_rx));
-                task::park().unpark();
                 Ok(Async::NotReady)
-            }
+            },
+            Err(err) => Err(err)
         }
     }
 }
@@ -186,27 +200,30 @@ impl Future for WaitForHandshake {
     type Error = Error;
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let (sender, ev_rx) = self.0.take().expect("Cannot poll WaitForHandshake twice.");
-        match ev_rx.try_recv() {
-            Ok(Event::Close) => {
-                Err(Error::new(ErrorKind::ConnectionRefused, CONNECTION_CLOSED_BEFORE_HANDSHAKE))
+        let (sender, mut ev_rx) = self.0.take().expect("Cannot poll WaitForHandshake twice.");
+
+        match ev_rx.poll() {
+            Ok(Async::Ready(Some(event))) => {
+                match event {
+                    Event::Close => Err(Error::new(ErrorKind::ConnectionRefused, CONNECTION_CLOSED_BEFORE_HANDSHAKE)),
+                    Event::Error(err) => Err(Error::new(ErrorKind::Other, err)),
+                    Event::Packet(ref pck) => {
+                        if pck.opcode() == OpCode::Pong && pck.payload().as_str() == Some(HANDSHAKE_PAYLOAD) {
+                            let tx = Sender(sender);
+                            let rx = Receiver(Some(ev_rx));
+                            Ok(Async::Ready((tx, rx)))
+                        } else {
+                            Err(Error::new(ErrorKind::InvalidData, "Received incorrect handshake response."))
+                        }
+                    }
+                }
             },
-            Ok(Event::Error(err)) => {
-                Err(Error::new(ErrorKind::Other, err))
-            },
-            Ok(Event::Packet(ref pck)) if pck.opcode() == OpCode::Pong && pck.payload().as_str() == Some("probe") => {
-                let tx = Sender(sender);
-                let rx = Receiver(Some(ev_rx));
-                Ok(Async::Ready((tx, rx)))
-            },
-            Err(err @ TryRecvError::Disconnected) => {
-                Err(Error::new(ErrorKind::Other, err))
-            },
-            Ok(Event::Packet(_)) | Err(TryRecvError::Empty) => {
+            Ok(Async::Ready(None)) => Err(Error::new(ErrorKind::Other, TryRecvError::Disconnected)),
+            Ok(Async::NotReady) => {
                 self.0 = Some((sender, ev_rx));
-                task::park().unpark();
                 Ok(Async::NotReady)
-            }
+            },
+            Err(err) => Err(err)
         }
     }
 }
