@@ -27,7 +27,6 @@ const HTTP_INVALID_STATUS_CODE: &'static str = "Received an invalid HTTP status 
 ///
 /// This method performs a handshake and then connects to the server.
 pub fn connect(config: Config, handle: Handle) -> Box<Future<Item=(Sender, Receiver), Error=Error>> {
-    // .boxed() requires Send, which we don't have
     Box::new(
         get_data(&config, &handle)
             .map(move |tc| connect_with_data(config, tc, handle))
