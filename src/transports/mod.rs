@@ -15,6 +15,11 @@ use std::time::Duration;
 use rand::{Rng, weak_rng, XorShiftRng};
 use url::Url;
 
+/// The random number generator used to generate the cache busting
+/// part of the URLs.
+///
+/// The underlying generator is weak, cryptographically speaking, but that
+/// doesn't matter since we're only trying to get through request caches.
 thread_local!(static RNG: RefCell<XorShiftRng> = RefCell::new(weak_rng()));
 
 /// Indicates who started the closing of the connection.
