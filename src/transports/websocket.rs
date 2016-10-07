@@ -31,7 +31,7 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), 
         let (event_tx, event_rx) = mpsc::channel();
 
         thread::Builder::new()
-            .name("engine.io websocket thread".to_owned())
+            .name("Engine.io websocket thread".to_owned())
             .spawn(move || {
                 tp_cfg.apply_to(&mut conn_cfg.url);
                 conn_cfg.url.query_pairs_mut()
@@ -43,7 +43,7 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data) -> BoxFuture<(Sender, Receiver), 
                         tx: event_tx.clone(), // FnMut closure
                         ws: sender
                     }
-                }).expect("Failed to create the websocket.");
+                }).expect("Failed to create websocket.");
             })
             .expect("Failed to start websocket thread.");
 
@@ -127,9 +127,10 @@ impl Stream for Receiver {
 
 impl Sender {
     /// Closes the connection to the server.
-    pub fn close(self) {
-        let _ = self.0.send(Packet::empty(OpCode::Close));
-        let _ = self.0.close(CloseCode::Normal);
+    pub fn close(self) -> Result<(), ws::Error> {
+        try!(self.0.send(Packet::empty(OpCode::Close)));
+        try!(self.0.close(CloseCode::Normal));
+        Ok(())
     }
 
     /// Sends packets to the server.

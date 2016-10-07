@@ -20,7 +20,6 @@ use tokio_core::reactor::Handle;
 use tokio_request as http;
 use url::Url;
 
-const HANDSHAKE_BINARY_RECEIVED: &'static str = "Received binary packet when string packet was expected in session initialization.";
 const HANDSHAKE_PACKET_MISSING: &'static str = "Expected at least one valid packet as part of the handshake.";
 const HTTP_INVALID_STATUS_CODE: &'static str = "Received an invalid HTTP status code.";
 
@@ -161,17 +160,33 @@ impl Stream for Receiver {
 
 impl Sender {
     /// Closes the connection to the server.
-    pub fn close(self) -> BoxFuture<(), ()> {
+    pub fn close(self) -> BoxFuture<(), Error> {
         let _ = self.close_tx.send(());
         let pck = Packet::empty(OpCode::Close);
-        send(&self.inner.conn_cfg, &self.inner.data, &self.inner.handle, vec![pck])
-            .map_err(|_| ())
-            .boxed()
+        self.send(vec![pck])
     }
 
     /// Sends packets to the server.
     pub fn send(&self, packets: Vec<Packet>) -> BoxFuture<(), Error> {
-        send(&self.inner.conn_cfg, &self.inner.data, &self.inner.handle, packets)
+        let capacity = packets.iter().fold(0usize, |val, p| {
+            val + p.compute_payload_length(false)
+        });
+        let mut buf = Cursor::new(vec![0; capacity]);
+        for packet in packets {
+            if let Err(err) = packet.write_payload_to(&mut buf) {
+                return futures::failed(err).boxed();
+            }
+        }
+
+        prepare_request(http::post, &self.inner.conn_cfg, Some(&self.inner.data))
+            .body(buf.into_inner())
+            .send(self.inner.handle.clone())
+            .and_then(|resp| {
+                resp.ensure_success()
+                    .map_err(|_| Error::new(ErrorKind::InvalidData, HTTP_INVALID_STATUS_CODE))
+            })
+            .map(|_| ())
+            .boxed()
     }
 
     /// Gets the underlying transport configuration.
@@ -226,32 +241,6 @@ fn prepare_request<R: FnOnce(&Url) -> http::Request>(request_fn: R, conn_cfg: &C
     }
     request.param("transport", "polling")
            .headers(conn_cfg.extra_headers.clone())
-}
-
-fn send(conn_cfg: &Config,
-        data: &Data,
-        handle: &Handle,
-        packets: Vec<Packet>)
-        -> BoxFuture<(), Error> {
-    let capacity = packets.iter().fold(0usize, |val, p| {
-        val + p.compute_payload_length(false)
-    });
-    let mut buf = Cursor::new(vec![0; capacity]);
-    for packet in packets {
-        if let Err(err) = packet.write_payload_to(&mut buf) {
-            return futures::failed(err).boxed();
-        }
-    }
-
-    prepare_request(http::post, conn_cfg, Some(data))
-        .body(buf.into_inner())
-        .send(handle.clone())
-        .and_then(|resp| {
-            resp.ensure_success()
-                .map_err(|_| Error::new(ErrorKind::InvalidData, HTTP_INVALID_STATUS_CODE))
-        })
-        .map(|_| ())
-        .boxed()
 }
 
 #[cfg(test)]

@@ -5,8 +5,8 @@
 //! the creators of engine.io.
 
 use std::fmt::{Display, format, Formatter, Result as FmtResult};
-use std::io::{BufRead, CharsError, Error, ErrorKind, Read, Result as IoResult, Write};
-use std::str::{FromStr, from_utf8};
+use std::io::{BufRead, CharsError, Error, ErrorKind, Read, Write};
+use std::str::{self, FromStr};
 
 use rustc_serialize::Decodable;
 use rustc_serialize::base64::{self, FromBase64, ToBase64};
@@ -14,7 +14,6 @@ use rustc_serialize::json;
 
 const BUFFER_UNEXPECTED_EOF: &'static str = "Packet opcode or binary indicator could not be read because the end of the buffer string was reached.";
 const DATA_LENGTH_INVALID: &'static str = "The data length could not be parsed.";
-const INVALID_UTF8: &'static str = "Input wasn't valid UTF-8.";
 const OPCODE_CHAR_NO_INTEGER: &'static str = "Could not parse opcode value to a valid integer.";
 const OPCODE_INVALID_DATA: &'static str = "Invalid opcode value. Valid values are in the range of [0, 6].";
 const OPCODE_UNEXPECTED_EOF: &'static str = "String slice to convert to opcode is empty.";
@@ -159,7 +158,7 @@ impl Packet {
                 return Err(Error::new(ErrorKind::UnexpectedEof, READER_UNEXPECTED_EOF));
             }
             let data_length_str = try!(
-                from_utf8(&buf[..buf.len() - 1])
+                str::from_utf8(&buf[..buf.len() - 1])
                     .map_err(|err| Error::new(ErrorKind::InvalidData, err))
             );
             try!(
@@ -211,12 +210,12 @@ impl Packet {
     }
 
     /// Writes the packet into the given `writer`.
-    pub fn write_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
+    pub fn write_to<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
         write_packet!(self, writer)
     }
 
     /// Writes the packet as payload into the given `writer`.
-    pub fn write_payload_to<W: Write>(&self, writer: &mut W) -> IoResult<()> {
+    pub fn write_payload_to<W: Write>(&self, writer: &mut W) -> Result<(), Error> {
         let length = self.compute_length(true);
         try!(write!(writer, "{}:", length));
         self.write_to(writer)
@@ -306,7 +305,7 @@ impl Payload {
     /// Returns `None` when binary data that does not represent valid UTF-8 is encountered.
     pub fn as_str(&self) -> Option<&str> {
         match *self {
-            Payload::Binary(ref data) => from_utf8(data).ok(),
+            Payload::Binary(ref data) => str::from_utf8(data).ok(),
             Payload::String(ref str) => Some(str)
         }
     }
@@ -317,7 +316,7 @@ impl Payload {
     /// data as a UTF-8 string and decode from that.
     pub fn from_json<T: Decodable>(&self) -> Result<T, Error> {
         let str = match *self {
-            Payload::Binary(ref data) => try!(from_utf8(data).map_err(|err| Error::new(ErrorKind::InvalidData, err))),
+            Payload::Binary(ref data) => try!(str::from_utf8(data).map_err(|err| Error::new(ErrorKind::InvalidData, err))),
             Payload::String(ref str) => str
         };
         json::decode(str).map_err(|err| Error::new(ErrorKind::InvalidData, err))
@@ -498,7 +497,7 @@ mod tests {
     #[test]
     fn payload_multiple_encoding() {
         use std::io::Cursor;
-        use std::str::from_utf8;
+        use std::str;
 
         let p1 = Packet::with_str(OpCode::Message, STRING_PAYLOAD);
         let p2 = Packet::with_binary(OpCode::Message, BINARY_PAYLOAD.to_vec());
@@ -506,7 +505,7 @@ mod tests {
         p1.write_payload_to(&mut buf).expect("Failed to write string packet into buffer.");
         p2.write_payload_to(&mut buf).expect("Failed to write binary packet into buffer.");
         let buf = buf.into_inner();
-        let str = from_utf8(&buf).expect("Failed to convert written data into UTF-8.");
+        let str = str::from_utf8(&buf).expect("Failed to convert written data into UTF-8.");
 
         assert_eq!(str, format!("12:4{}14:b4{}", STRING_PAYLOAD, BINARY_PAYLOAD_B64))
     }
