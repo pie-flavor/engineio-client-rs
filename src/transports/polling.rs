@@ -8,6 +8,7 @@ use std::fmt::{Debug, Formatter, Result as FmtResult};
 use std::io::{Cursor, Error, ErrorKind};
 use std::rc::Rc;
 use std::sync::mpsc;
+use std::time::{Duration, Instant};
 use std::vec::IntoIter;
 
 use packet::{Packet, OpCode};
@@ -104,7 +105,7 @@ enum State {
     Ready(IntoIter<Packet>),
 
     /// We're currently waiting for a response from the server.
-    Waiting(BoxFuture<Vec<Packet>, Error>)
+    Waiting(Instant, BoxFuture<Vec<Packet>, Error>)
 }
 
 impl Receiver {
@@ -132,7 +133,11 @@ impl Stream for Receiver {
                         Some(&self.inner.data),
                         &self.inner.handle
                     );
-                    self.state = Some(State::Waiting(fut));
+
+                    // Record the time when we start polling so that we can determine
+                    // whether a possible timeout has just occured because there was
+                    // no data available or because the connection had issues.
+                    self.state = Some(State::Waiting(Instant::now(), fut));
                 },
                 State::Ready(mut packets) => {
                     match packets.next() {
@@ -143,12 +148,25 @@ impl Stream for Receiver {
                         None => self.state = Some(State::Empty),
                     }
                 },
-                State::Waiting(mut fut) => {
-                    match try!(fut.poll()) {
-                        Async::Ready(packets) => self.state = Some(State::Ready(packets.into_iter())),
-                        Async::NotReady => {
-                            self.state = Some(State::Waiting(fut));
+                State::Waiting(time, mut fut) => {
+                    match fut.poll() {
+                        Ok(Async::Ready(packets)) => {
+                            self.state = Some(State::Ready(packets.into_iter()));
+                        },
+                        Ok(Async::NotReady) => {
+                            self.state = Some(State::Waiting(time, fut));
                             return Ok(Async::NotReady);
+                        },
+                        Err(err) => {
+                            // If we're dealing with a timeout error and it occured because there
+                            // was no data available to us (ping timeout hasn't elapsed yet), just
+                            // continue polling.
+                            if err.kind() == ErrorKind::TimedOut &&
+                               time.elapsed() <= self.inner.data.ping_timeout() {
+                                self.state = Some(State::Empty);
+                            } else {
+                                return Err(err);
+                            }
                         }
                     }
                 }
@@ -214,7 +232,9 @@ impl Debug for State {
             State::Ready(ref iter) => fmt.debug_tuple("Ready")
                                          .field(&iter)
                                          .finish(),
-            State::Waiting(_) => fmt.debug_tuple("Waiting").finish()
+            State::Waiting(time, _) => fmt.debug_tuple("Waiting")
+                                          .field(&time)
+                                          .finish()
         }
     }
 }
@@ -238,15 +258,17 @@ fn prepare_request<R: FnOnce(&Url) -> http::Request>(request_fn: R, conn_cfg: &C
     if let Some(cfg) = data {
         cfg.apply_to(&mut url);
     }
-    let mut request = request_fn(&url);
-    if let Some(cfg) = data {
-        request = request.timeout(cfg.ping_timeout());
-    }
-    request.param("EIO", "3")
-           .param("transport", "polling")
-           .param("t", &gen_random_string())
-           .param("b64", "1")
-           .headers(conn_cfg.extra_headers.clone())
+    request_fn(&url)
+        .param("EIO", "3")
+        .param("transport", "polling")
+        .param("t", &gen_random_string())
+        .param("b64", "1")
+        .headers(conn_cfg.extra_headers.clone())
+        .timeout(if let Some(cfg) = data {
+            cfg.ping_interval()
+        } else {
+            Duration::from_secs(5)
+        })
 }
 
 #[cfg(test)]
