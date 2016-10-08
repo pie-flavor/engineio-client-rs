@@ -148,13 +148,13 @@ impl Stream for Receiver {
                         None => self.state = Some(State::Empty),
                     }
                 },
-                State::Waiting(time, mut fut) => {
+                State::Waiting(poll_start, mut fut) => {
                     match fut.poll() {
                         Ok(Async::Ready(packets)) => {
                             self.state = Some(State::Ready(packets.into_iter()));
                         },
                         Ok(Async::NotReady) => {
-                            self.state = Some(State::Waiting(time, fut));
+                            self.state = Some(State::Waiting(poll_start, fut));
                             return Ok(Async::NotReady);
                         },
                         Err(err) => {
@@ -162,7 +162,7 @@ impl Stream for Receiver {
                             // was no data available to us (ping timeout hasn't elapsed yet), just
                             // continue polling.
                             if err.kind() == ErrorKind::TimedOut &&
-                               time.elapsed() <= self.inner.data.ping_timeout() {
+                               poll_start.elapsed() <= self.inner.data.ping_timeout() {
                                 self.state = Some(State::Empty);
                             } else {
                                 return Err(err);
