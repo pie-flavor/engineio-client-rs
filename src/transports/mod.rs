@@ -44,6 +44,23 @@ pub struct Data {
 }
 
 impl Data {
+    /// Creates a new instance.
+    pub fn new(ping_interval: Duration,
+               ping_timeout: Duration,
+               sid: String,
+               upgrades: Vec<String>) -> Self {
+        fn to_millis(dur: Duration) -> u32 {
+            (dur.as_secs() * 1000) as u32 + dur.subsec_nanos() / 1_000_000
+        }
+
+        Data {
+            pingInterval: to_millis(ping_interval),
+            pingTimeout: to_millis(ping_timeout),
+            sid: sid,
+            upgrades: upgrades
+        }
+    }
+
     /// Modifies the given URL with the information in this struct.
     pub fn apply_to(&self, url: &mut Url) {
         url.query_pairs_mut()
