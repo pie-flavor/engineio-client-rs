@@ -248,3 +248,56 @@ impl From<Packet> for ws::Message {
         ws::Message::Text(p.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use std::io::{Error, ErrorKind};
+    use std::time::Duration;
+
+    use super::*;
+    use connection::Config;
+    use packet::{OpCode, Packet};
+
+    use futures::Future;
+    use futures::stream::Stream;
+    use tokio_core::reactor::{Core, Timeout};
+    use url::Url;
+
+    const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+    fn get_config() -> Config {
+        Config {
+            extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
+            url: Url::parse(ENGINEIO_URL).unwrap()
+        }
+    }
+
+    #[test]
+    fn connection() {
+        let mut c = Core::new().unwrap();
+        let conf = get_config();
+        let h = c.handle();
+        let timeout = Timeout::new(Duration::from_secs(10), &c.handle())
+            .unwrap()
+            .then(|_| Err(Error::new(ErrorKind::TimedOut, "Timed out.")));
+
+        let fut = ::transports::polling::get_data(&conf, &c.handle())
+            .and_then(move |data| connect(conf, data, h))
+            .and_then(|(tx, rx)| {
+                let res = tx.send(vec![Packet::with_str(OpCode::Message, "Hello from Websocket!")]);
+                assert!(res.is_ok(), "Failed to send packet!");
+
+                rx.map_err(|err| Error::new(ErrorKind::Other, err))
+                  .take(1)
+                  .collect()
+            })
+            .and_then(|msgs| {
+                assert!(msgs.len() >= 1);
+                Ok(())
+            })
+            .select(timeout)
+            .map_err(|(a, _)| a);
+            
+        c.run(fut).unwrap();
+    }
+}
