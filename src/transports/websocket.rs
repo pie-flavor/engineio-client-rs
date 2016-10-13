@@ -36,14 +36,24 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> Box<Future<Ite
         thread::Builder::new()
             .name("Engine.io websocket thread".to_owned())
             .spawn(move || {
-                tp_cfg.apply_to(&mut conn_cfg.url);
-                conn_cfg.url.query_pairs_mut()
-                            .append_pair("EIO", "3")
-                            .append_pair("transport", "websocket")
-                            .append_pair("t", &gen_random_string())
-                            .append_pair("b64", "1");
+                let url = {
+                    // Switch the URL scheme to either ws or wss, depending
+                    // on whether we're using HTTP or HTTPS.
+                    let new_scheme = conn_cfg.url.scheme()
+                                                 .replace("http", "ws")
+                                                 .replace("HTTP", "ws");
+                    conn_cfg.url.set_scheme(&new_scheme).expect("Failed to set websocket URL scheme.");
 
-                ws::connect(conn_cfg.url.to_string(), move |sender| {
+                    tp_cfg.apply_to(&mut conn_cfg.url);
+                    conn_cfg.url.query_pairs_mut()
+                                .append_pair("EIO", "3")
+                                .append_pair("transport", "websocket")
+                                .append_pair("t", &gen_random_string())
+                                .append_pair("b64", "1");
+                    conn_cfg.url
+                };
+
+                ws::connect(url.to_string(), move |sender| {
                     let _ = sender_tx.send(sender.clone());
                     Handler {
                         tx: event_tx.clone(), // FnMut closure
