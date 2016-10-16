@@ -273,26 +273,16 @@ fn prepare_request<R: FnOnce(&Url) -> http::Request>(request_fn: R, conn_cfg: &C
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
-
     use super::*;
+
     use connection::Config;
     use packet::*;
-    use transports::Data;
+    use transports::get_config;
 
     use futures::Future;
     use futures::stream::Stream;
-    use tokio_core::reactor::{Core, Handle};
+    use tokio_core::reactor::Core;
     use url::Url;
-
-    const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
-
-    fn get_config() -> Config {
-        Config {
-            extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
-            url: Url::parse(ENGINEIO_URL).unwrap()
-        }
-    }
 
     #[test]
     fn connection() {

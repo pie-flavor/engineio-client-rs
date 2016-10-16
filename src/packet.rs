@@ -272,8 +272,9 @@ impl OpCode {
     /// Tries to parse an OpCode from a scalar value encoded as string.
     pub fn from_str(value: &str) -> Result<OpCode, Error> {
         if !value.is_empty() {
-            let res = value.parse::<u8>().map_err(|_| Error::new(ErrorKind::InvalidData, OPCODE_CHAR_NO_INTEGER));
-            OpCode::from_u8(try!(res))
+            value.parse::<u8>()
+                .map_err(|_| Error::new(ErrorKind::InvalidData, OPCODE_CHAR_NO_INTEGER))
+                .and_then(|val| OpCode::from_u8(val))
         } else {
             Err(Error::new(ErrorKind::UnexpectedEof, OPCODE_UNEXPECTED_EOF))
         }

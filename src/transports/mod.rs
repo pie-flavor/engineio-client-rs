@@ -76,3 +76,13 @@ impl Data {
 fn gen_random_string() -> String {
     RNG.with(|rc| rc.borrow_mut().gen_ascii_chars().take(7).collect::<String>())
 }
+
+#[cfg(test)]
+fn get_config() -> Config {
+    const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+    Config {
+        extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
+        url: Url::parse(ENGINEIO_URL).unwrap()
+    }
+}

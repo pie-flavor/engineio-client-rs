@@ -238,3 +238,25 @@ impl From<Packet> for ws::Message {
         ws::Message::Text(p.to_string())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    use connection::Config;
+    use packet::*;
+    use transports::get_config;
+
+    use futures::Future;
+    use futures::stream::Stream;
+    use tokio_core::reactor::Core;
+    use url::Url;
+
+    const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+    #[test]
+    fn connection() {
+        let mut c = Core::new();
+
+    }
+}
