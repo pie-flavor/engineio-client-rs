@@ -36,14 +36,24 @@ pub fn connect(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> Box<Future<Ite
         thread::Builder::new()
             .name("Engine.io websocket thread".to_owned())
             .spawn(move || {
-                tp_cfg.apply_to(&mut conn_cfg.url);
-                conn_cfg.url.query_pairs_mut()
-                            .append_pair("EIO", "3")
-                            .append_pair("transport", "websocket")
-                            .append_pair("t", &gen_random_string())
-                            .append_pair("b64", "1");
+                let url = {
+                    // Switch the URL scheme to either ws or wss, depending
+                    // on whether we're using HTTP or HTTPS.
+                    let new_scheme = conn_cfg.url.scheme()
+                                                 .replace("http", "ws")
+                                                 .replace("HTTP", "ws");
+                    conn_cfg.url.set_scheme(&new_scheme).expect("Failed to set websocket URL scheme.");
 
-                ws::connect(conn_cfg.url.to_string(), move |sender| {
+                    tp_cfg.apply_to(&mut conn_cfg.url);
+                    conn_cfg.url.query_pairs_mut()
+                                .append_pair("EIO", "3")
+                                .append_pair("transport", "websocket")
+                                .append_pair("t", &gen_random_string())
+                                .append_pair("b64", "1");
+                    conn_cfg.url
+                };
+
+                ws::connect(url.to_string(), move |sender| {
                     let _ = sender_tx.send(sender.clone());
                     Handler {
                         tx: event_tx.clone(), // FnMut closure
@@ -241,22 +251,53 @@ impl From<Packet> for ws::Message {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use std::io::{Error, ErrorKind};
+    use std::time::Duration;
 
+    use super::*;
     use connection::Config;
-    use packet::*;
-    use transports::get_config;
+    use packet::{OpCode, Packet};
 
     use futures::Future;
     use futures::stream::Stream;
-    use tokio_core::reactor::Core;
+    use tokio_core::reactor::{Core, Timeout};
     use url::Url;
 
-    const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+    fn get_config() -> Config {
+        const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+        Config {
+            extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
+            url: Url::parse(ENGINEIO_URL).unwrap()
+        }
+    }
 
     #[test]
     fn connection() {
-        let mut c = Core::new();
+        let mut c = Core::new().unwrap();
+        let conf = get_config();
+        let h = c.handle();
+        let timeout = Timeout::new(Duration::from_secs(10), &c.handle())
+            .unwrap()
+            .then(|_| Err(Error::new(ErrorKind::TimedOut, "Timed out.")));
 
+        let fut = ::transports::polling::get_data(&conf, &c.handle())
+            .and_then(move |data| connect(conf, data, h))
+            .and_then(|(tx, rx)| {
+                let res = tx.send(vec![Packet::with_str(OpCode::Message, "Hello from Websocket!")]);
+                assert!(res.is_ok(), "Failed to send packet!");
+
+                rx.map_err(|err| Error::new(ErrorKind::Other, err))
+                  .take(1)
+                  .collect()
+            })
+            .and_then(|msgs| {
+                assert!(msgs.len() >= 1);
+                Ok(())
+            })
+            .select(timeout)
+            .map_err(|(a, _)| a);
+
+        c.run(fut).unwrap();
     }
 }

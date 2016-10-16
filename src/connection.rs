@@ -63,14 +63,14 @@ pub fn connect_with_data(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> (Sen
                      .map_err(|_| ())
                      .and_then(move |_| Ok(txrx))
         })
-        .and_then(move |txrx| {
+        .and_then(move |(tx, rx)| {
             // Now as we've notified the server that we're ready for websockets,
             // add the websocket sender and receiver to instances.
             if let Some(cell) = ws_tx_w.upgrade() {
-                *cell.borrow_mut() = Some(txrx.0);
+                *cell.borrow_mut() = Some(tx);
             }
             if let Some(cell) = ws_rx_w.upgrade() {
-                *cell.borrow_mut() = Some(txrx.1);
+                *cell.borrow_mut() = Some(rx);
             }
             Ok(())
         });

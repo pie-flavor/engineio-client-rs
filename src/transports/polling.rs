@@ -267,7 +267,7 @@ fn prepare_request<R: FnOnce(&Url) -> http::Request>(request_fn: R, conn_cfg: &C
         .timeout(if let Some(cfg) = data {
             cfg.ping_interval()
         } else {
-            Duration::from_secs(5)
+            Duration::from_secs(10)
         })
 }
 
@@ -277,12 +277,20 @@ mod tests {
 
     use connection::Config;
     use packet::*;
-    use transports::get_config;
 
     use futures::Future;
     use futures::stream::Stream;
     use tokio_core::reactor::Core;
     use url::Url;
+
+    fn get_config() -> Config {
+        const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+        Config {
+            extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
+            url: Url::parse(ENGINEIO_URL).unwrap()
+        }
+    }
 
     #[test]
     fn connection() {
