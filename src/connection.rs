@@ -213,4 +213,24 @@ mod tests {
             });
         c.run(fut).unwrap();
     }
+
+    #[test]
+    fn send_multiple() {
+        let mut c = Core::new().unwrap();
+        let fut = connect(get_config(), c.handle())
+            .and_then(|(tx, rx)| {
+                let packets = vec![
+                    Packet::with_str(OpCode::Message, "This is vector packet 1."),
+                    Packet::with_str(OpCode::Message, "This is vector packet 2."),
+                ];
+                tx.send(packets)
+                  .join(rx.take(1).collect())
+            })
+            .and_then(|(_, msgs)| {
+                assert!(msgs.len() >= 1);
+                println!("{:?}", msgs);
+                Ok(())
+            });
+        c.run(fut).unwrap();
+    }
 }
