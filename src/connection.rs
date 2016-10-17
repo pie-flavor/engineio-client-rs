@@ -32,6 +32,11 @@ pub fn connect(config: Config, handle: Handle) -> Box<Future<Item=(Sender, Recei
 ///
 /// Since this function also accepts transport configuration, it also allows
 /// reopening a broken connection after downtime.
+///
+/// All information needed for the long polling transport is encoded in
+/// the parameters, which is why this function does not return a future.
+/// The websocket connection, however, is built up asynchronously in the
+/// background and joined into the connection transparently.
 pub fn connect_with_data(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> (Sender, Receiver) {
     let (close_tx, close_rx) = mpsc::channel();
     let (poll_tx, poll_rx) = poll::connect_with_data(
@@ -58,14 +63,15 @@ pub fn connect_with_data(conn_cfg: Config, tp_cfg: Data, handle: Handle) -> (Sen
             // packets through HTTP long polling.
             //
             // For the sake of implementation simplicity we continue polling for
-            // now even though the packet has been sent.
+            // now even though the packet has been sent. This should be changed
+            // in the future for better performance and scalability.
             poll_tx_2.send(vec![Packet::empty(OpCode::Upgrade)])
                      .map_err(|_| ())
                      .and_then(move |_| Ok(txrx))
         })
         .and_then(move |(tx, rx)| {
             // Now as we've notified the server that we're ready for websockets,
-            // add the websocket sender and receiver to instances.
+            // transparently add the websocket sender and receiver to the instances.
             if let Some(cell) = ws_tx_w.upgrade() {
                 *cell.borrow_mut() = Some(tx);
             }
@@ -131,14 +137,12 @@ impl Sender {
         }
     }
 
-    /// Sends the given packet to the other endpoint.
-    pub fn send(&self, packet: Packet) -> BoxFuture<(), Error> {
-        self.send_all(vec![packet])
-    }
-
-    /// Sends all the given packets to the other endpoint.
-    pub fn send_all(&self, packets: Vec<Packet>) -> BoxFuture<(), Error> {
-        self.send_with_best(packets)
+    /// Sends the given packet(s) to the other endpoint.
+    ///
+    /// This can be used to send either a single packet or multiple
+    /// packets since both implement Into<Vec<Packet>>.
+    pub fn send<P: Into<Vec<Packet>>>(&self, packet: P) -> BoxFuture<(), Error> {
+        self.send_with_best(packet.into())
     }
 
     /// Attempts to send the given messages through the websocket

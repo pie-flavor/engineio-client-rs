@@ -260,6 +260,12 @@ impl FromStr for Packet {
     }
 }
 
+impl From<Packet> for Vec<Packet> {
+    fn from(p: Packet) -> Self {
+        vec![p]
+    }
+}
+
 impl OpCode {
     /// Tries to parse an OpCode from a scalar value encoded as char.
     pub fn from_char(value: char) -> Result<OpCode, Error> {
