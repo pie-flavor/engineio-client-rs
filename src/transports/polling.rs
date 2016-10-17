@@ -204,7 +204,7 @@ impl Sender {
             .send(self.inner.handle.clone())
             .and_then(|resp| {
                 resp.ensure_success()
-                .map_err(|res| Error::new(ErrorKind::InvalidData, format!("{} {:?}", HTTP_INVALID_STATUS_CODE, res).as_ref()))
+                    .map_err(|res| Error::new(ErrorKind::InvalidData, format!("{} {:?}", HTTP_INVALID_STATUS_CODE, res).as_ref()))
             })
             .map(|_| ())
             .boxed()
