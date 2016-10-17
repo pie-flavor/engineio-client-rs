@@ -142,12 +142,9 @@ impl Sender {
     /// This can be used to send either a single packet or multiple
     /// packets since both implement Into<Vec<Packet>>.
     pub fn send<P: Into<Vec<Packet>>>(&self, packet: P) -> BoxFuture<(), Error> {
-        self.send_with_best(packet.into())
-    }
-
-    /// Attempts to send the given messages through the websocket
-    /// connection, if available. Otherwise falls back to HTTP long polling.
-    fn send_with_best(&self, packets: Vec<Packet>) -> BoxFuture<(), Error> {
+        // Attempts to send the given messages through the websocket
+        // connection, if available. Otherwise falls back to HTTP long polling.
+        let packets = packet.into();
         if let Some(ref ws) = *self.ws_tx.borrow() {
             ws.send(packets)
               .map_err(|ws_err| Error::new(ErrorKind::Other, ws_err))
