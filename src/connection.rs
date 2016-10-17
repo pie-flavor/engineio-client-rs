@@ -181,3 +181,39 @@ impl Stream for Receiver {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use packet::{OpCode, Packet};
+
+    use futures::Future;
+    use futures::stream::Stream;
+    use tokio_core::reactor::Core;
+    use url::Url;
+
+    fn get_config() -> Config {
+        const ENGINEIO_URL: &'static str = "http://festify.us:5002/engine.io/";
+
+        Config {
+            extra_headers: vec![("X-Requested-By".to_owned(), "engineio-rs".to_owned())],
+            url: Url::parse(ENGINEIO_URL).unwrap()
+        }
+    }
+
+    #[test]
+    fn connection() {
+        let mut c = Core::new().unwrap();
+        let fut = connect(get_config(), c.handle())
+            .and_then(|(tx, rx)| {
+                tx.send(Packet::with_str(OpCode::Message, "Hello from Connection top level Sender!"))
+                  .join(rx.take(1).collect())
+            })
+            .and_then(|(_, msgs)| {
+                assert!(msgs.len() >= 1);
+                println!("{:?}", msgs);
+                Ok(())
+            });
+        c.run(fut).unwrap();
+    }
+}
